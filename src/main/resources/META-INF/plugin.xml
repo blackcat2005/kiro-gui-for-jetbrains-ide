@@ -1,0 +1,31 @@
+<idea-plugin>
+    <id>com.kirogui.jetbrains</id>
+    <name>Kiro GUI (ACP)</name>
+    <vendor>kirogui</vendor>
+    <description><![CDATA[
+        Chat with <a href="https://kiro.dev">Kiro</a> inside JetBrains IDEs. Talks to
+        <code>kiro-cli acp</code> over the Agent Client Protocol (JSON-RPC over stdio):
+        streaming responses, per-tool permission prompts, cancellation, and editor-aware file access.
+        Requires kiro-cli to be installed and signed in.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="Kiro" anchor="right" icon="/icons/kiro.svg"
+                    factoryClass="com.kirogui.jetbrains.ui.KiroToolWindowFactory"/>
+        <applicationConfigurable parentId="tools" id="com.kirogui.jetbrains.settings"
+                                 displayName="Kiro"
+                                 instance="com.kirogui.jetbrains.settings.KiroConfigurable"/>
+    </extensions>
+
+    <actions>
+        <action id="com.kirogui.jetbrains.SendSelectionToKiro"
+                class="com.kirogui.jetbrains.ui.SendSelectionToKiroAction"
+                text="Send to Kiro" description="Put the selected code into the Kiro chat input"
+                icon="/icons/kiro.svg">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt K"/>
+        </action>
+    </actions>
+</idea-plugin>

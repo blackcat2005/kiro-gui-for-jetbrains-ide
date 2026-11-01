@@ -48,7 +48,7 @@ class SendSelectionToKiroAction : AnAction(), DumbAware {
 
         val toolWindow = ToolWindowManager.getInstance(project).getToolWindow("Kiro") ?: return
         toolWindow.activate {
-            (toolWindow.contentManager.getContent(0)?.component as? KiroChatPanel)?.appendToInput(text)
+            (toolWindow.contentManager.getContent(0)?.component as? KiroChatHost)?.chat?.appendToInput(text)
         }
     }
 }

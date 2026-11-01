@@ -11,6 +11,7 @@ import com.intellij.openapi.util.Disposer
 import com.kirogui.jetbrains.acp.AcpClient
 import com.kirogui.jetbrains.acp.AcpEvent
 import com.kirogui.jetbrains.acp.PermissionHandler
+import com.kirogui.jetbrains.acp.PlanUsage
 import com.kirogui.jetbrains.acp.SessionInfo
 import com.kirogui.jetbrains.kiro.EditPreview
 import com.kirogui.jetbrains.settings.KiroSettings
@@ -22,16 +23,23 @@ import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
 
-/** One `kiro-cli acp` process and one ACP session per project, started lazily. */
+/**
+ * Talks to one long-lived `kiro-cli acp` process per project. New chats and reopened sessions are opened on that
+ * same process (about a second) instead of starting a new one each time (two to three seconds). Every session on
+ * a process keeps its own MCP servers alive and ACP has no way to close one, so the process is recycled after a
+ * handful of sessions.
+ */
 @Service(Service.Level.PROJECT)
 class KiroAcpService(private val project: Project) : Disposable {
 
     private val log = Logger.getInstance(KiroAcpService::class.java)
     private val listeners = CopyOnWriteArrayList<(AcpEvent) -> Unit>()
 
-    private var process: Process? = null
-    private var client: AcpClient? = null
-    private var info: SessionInfo? = null
+    // Read from the EDT (e.g. to highlight the open session), so never guarded by the lock that open/close hold.
+    @Volatile private var process: Process? = null
+    @Volatile private var client: AcpClient? = null
+    @Volatile private var info: SessionInfo? = null
+    private var sessionsInProcess = 0
 
     // Remembered across "New chat" so the user's agent/model choice sticks.
     private var preferredModel: String? = null
@@ -43,23 +51,23 @@ class KiroAcpService(private val project: Project) : Disposable {
         Disposer.register(parent) { listeners.remove(listener) }
     }
 
-    /** Starts the process/session if needed (background thread). Completes with the agents and models on offer. */
-    fun start(): CompletableFuture<SessionInfo> = async { ensureSession().second }
+    /** The live session if there is one, else starts the process and a first session (background thread). */
+    fun start(): CompletableFuture<SessionInfo> = async { ensureLive() }
 
-    /** Drops the current session and reloads a stored one; its history is replayed through the event listeners. */
-    fun resume(sessionId: String, cwd: String): CompletableFuture<SessionInfo> = async {
-        reset()
-        ensureSession(resumeId = sessionId, cwdOverride = cwd).second
-    }
+    /** A fresh session on the running process. */
+    fun newSession(): CompletableFuture<SessionInfo> = async { openSession(null, null) }
+
+    /** Reloads a stored session on the running process; its history is replayed through the event listeners. */
+    fun resume(sessionId: String, cwd: String): CompletableFuture<SessionInfo> = async { openSession(sessionId, cwd) }
 
     /** The future completes with the stop reason, or fails with the cause. */
     fun prompt(text: String): CompletableFuture<String> = async {
-        val (c, session) = ensureSession()
+        val (c, session) = live()
         c.prompt(session.sessionId, text).get()
     }
 
     fun setModel(modelId: String): CompletableFuture<Unit> = async {
-        val (c, session) = ensureSession()
+        val (c, session) = live()
         c.setModel(session.sessionId, modelId)
         synchronized(this) {
             preferredModel = modelId
@@ -68,7 +76,7 @@ class KiroAcpService(private val project: Project) : Disposable {
     }
 
     fun setMode(modeId: String): CompletableFuture<Unit> = async {
-        val (c, session) = ensureSession()
+        val (c, session) = live()
         c.setMode(session.sessionId, modeId)
         synchronized(this) {
             preferredMode = modeId
@@ -76,21 +84,24 @@ class KiroAcpService(private val project: Project) : Disposable {
         }
     }
 
+    /** Account-wide plan credits; null if Kiro can't say (not signed in, no cap info). */
+    fun usage(): CompletableFuture<PlanUsage?> = async {
+        val (c, session) = live()
+        c.usage(session.sessionId)
+    }
+
+    /** The id of the live session, or null before one is started. Cheap and lock-free. */
+    fun currentSessionId(): String? = info?.sessionId
+
     fun cancel() {
         val c = client
         val s = info
         if (c != null && s != null) c.cancel(s.sessionId)
     }
 
-    /** Drops the current process/session; the next call starts a fresh one. */
+    /** Stops the process; the next call starts a fresh one. */
     @Synchronized
-    fun reset() {
-        client?.close()
-        process?.destroy()
-        client = null
-        process = null
-        info = null
-    }
+    fun reset() = shutdown()
 
     private fun <T> async(block: () -> T): CompletableFuture<T> {
         val result = CompletableFuture<T>()
@@ -105,11 +116,53 @@ class KiroAcpService(private val project: Project) : Disposable {
         return result
     }
 
-    @Synchronized
-    private fun ensureSession(resumeId: String? = null, cwdOverride: String? = null): Pair<AcpClient, SessionInfo> {
-        client?.let { c -> info?.let { return c to it } }
+    private fun live(): Pair<AcpClient, SessionInfo> {
+        val c = client
+        val s = info
+        if (c != null && s != null) return c to s
+        ensureLive()
+        return client!! to info!!
+    }
 
+    /** Idempotent under the lock, so a "start" racing a first prompt can't open two sessions. */
+    @Synchronized
+    private fun ensureLive(): SessionInfo = info ?: openSession(null, null)
+
+    @Synchronized
+    private fun openSession(resumeId: String?, cwdOverride: String?): SessionInfo {
         val cwd = cwdOverride ?: project.basePath ?: System.getProperty("user.home")
+        var c = client
+        if (c == null || sessionsInProcess >= MAX_SESSIONS_PER_PROCESS) {
+            shutdown()
+            c = launch(cwd)
+        }
+        val previous = info?.sessionId
+        // While opening, only the target session's events may reach the UI. A new session's id isn't known yet.
+        c.activeSession = resumeId ?: PENDING
+        var session = try {
+            if (resumeId != null) c.loadSession(resumeId, cwd) else c.newSession(cwd)
+        } catch (e: Exception) {
+            c.activeSession = previous
+            throw e
+        }
+        // A reloaded session keeps its own agent and model; only fresh sessions get the remembered choice.
+        if (resumeId == null) {
+            preferredMode?.takeIf { it != session.currentModeId && session.modes.any { m -> m.id == it } }?.let {
+                c.setMode(session.sessionId, it)
+                session = session.copy(currentModeId = it)
+            }
+            preferredModel?.takeIf { it != session.currentModelId && session.models.any { m -> m.id == it } }?.let {
+                c.setModel(session.sessionId, it)
+                session = session.copy(currentModelId = it)
+            }
+        }
+        c.activeSession = session.sessionId
+        info = session
+        sessionsInProcess++
+        return session
+    }
+
+    private fun launch(cwd: String): AcpClient {
         val cmd = GeneralCommandLine(KiroSettings.getInstance().state.kiroPath, "acp")
             .withWorkDirectory(cwd)
             .withCharset(Charsets.UTF_8)
@@ -124,38 +177,42 @@ class KiroAcpService(private val project: Project) : Disposable {
             files = IdeFileAccess(project),
             permissions = ideaPermissionHandler(),
             listener = { event ->
-                if (event is AcpEvent.Closed) synchronized(this) {
-                    if (process === proc) {
-                        client = null
-                        process = null
-                        info = null
-                    }
+                if (event !is AcpEvent.Closed) {
+                    listeners.forEach { it(event) }
+                } else if (process === proc) {
+                    // The live process died on its own. (One we shut down ourselves is no longer `process`.)
+                    process = null
+                    client = null
+                    info = null
+                    sessionsInProcess = 0
+                    listeners.forEach { it(event) }
                 }
-                listeners.forEach { it(event) }
             },
         )
         c.start()
         try {
             c.initialize()
-            var session = if (resumeId != null) c.loadSession(resumeId, cwd) else c.newSession(cwd)
-            // A reloaded session keeps its own agent and model; only fresh sessions get the remembered choice.
-            if (resumeId == null) preferredMode?.takeIf { it != session.currentModeId && session.modes.any { m -> m.id == it } }?.let {
-                c.setMode(session.sessionId, it)
-                session = session.copy(currentModeId = it)
-            }
-            if (resumeId == null) preferredModel?.takeIf { it != session.currentModelId && session.models.any { m -> m.id == it } }?.let {
-                c.setModel(session.sessionId, it)
-                session = session.copy(currentModelId = it)
-            }
-            process = proc
-            client = c
-            info = session
-            return c to session
         } catch (e: Exception) {
             c.close()
             proc.destroy()
             throw e
         }
+        process = proc
+        client = c
+        sessionsInProcess = 0
+        return c
+    }
+
+    private fun shutdown() {
+        val c = client
+        val p = process
+        // Clear first, so the process's own "closed" event is recognised as expected and ignored.
+        client = null
+        process = null
+        info = null
+        sessionsInProcess = 0
+        c?.close()
+        p?.destroy()
     }
 
     private fun ideaPermissionHandler() = PermissionHandler { request ->
@@ -190,4 +247,9 @@ class KiroAcpService(private val project: Project) : Disposable {
     }
 
     override fun dispose() = reset()
+
+    private companion object {
+        const val MAX_SESSIONS_PER_PROCESS = 6
+        const val PENDING = "\u0000pending"
+    }
 }

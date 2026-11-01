@@ -46,7 +46,7 @@ data class KiroSession(
     val kiroName: String
         get() = title?.takeIf { it.isNotBlank() && it != "New Session" }
             ?: firstPrompt?.take(70)
-            ?: "(empty session)"
+            ?: "New chat"
 }
 
 class SessionScanner(private val kiroHome: Path) {

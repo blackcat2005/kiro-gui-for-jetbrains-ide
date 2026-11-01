@@ -8,18 +8,30 @@ Requires IDE build 243+ (2024.3 and newer) and an installed, signed-in `kiro-cli
 
 ## Features
 
-- **Chat** with streaming Markdown, Stop button, Enter to send / Shift+Enter for a newline,
-  and a scroll position that stays put while you read.
-- **Agent and model pickers**, context usage % and credits per session.
+- **Chat** with streaming Markdown (headings, tables, quotes), **syntax-coloured code blocks** with a language label
+  and a Copy button, Stop button, Enter to send / Shift+Enter for a newline, and a scroll position that stays put
+  while you read.
+- **File names in answers are links**: Ctrl+click (Cmd+click on macOS) opens the file in the editor, at the line
+  when the answer says `File.kt:42`. Only names that resolve to a real file in the project are linked.
+- **Agent and model pickers**, context usage % and credits per session, and your **plan's credits** for the
+  billing cycle, top right of the chat (bar + `30.6 / 50 credits · 61%`, amber from 80%, red from 95%; click to
+  refresh). The header icons are on the left, with the session-list toggle first.
 - **Diff review before edits**: when Kiro asks permission to create or change a file, the change opens
   as an IDE diff with Kiro's own Yes / Always / No buttons.
-- **Slash commands and skills** from a `/` menu; **Send to Kiro** (`Ctrl+Alt+K`) puts the selected code,
-  file and line range into the chat input.
-- **Sessions**: your Kiro sessions as a tree, with your own (nestable) folders, rename, and tangents /
-  subagent sessions shown under the session they branched from. Sessions in Kiro's legacy store can be
-  reopened with their history; sessions in the newer v3 store can be organised and renamed but not reopened
-  (the `kiro-cli acp` server can't load them).
-- **Manage** skills, steering files, specs (with task progress) and hooks under `.kiro/`.
+- **Typing helpers**: `/` at the start suggests Kiro's slash commands and your skills (and subcommands after
+  `/context `); `@` suggests project files (recently opened first) and skills. **Send to Kiro** (`Ctrl+Alt+K`)
+  puts the selected code, file and line range into the input.
+- **Session sidebar** beside the chat: click a session to reopen it, **New chat**, folders (drag a session onto a
+  folder to file it), the open session highlighted. Hide or show it with the header button (top right).
+  A clicked session's history appears at once (read from Kiro's files) while Kiro reloads it in the background;
+  sessions Kiro can't reload, such as tangents in the v3 store, open read-only. New chats and reopened sessions
+  reuse the running `kiro-cli` process (about a second instead of two to three).
+- **Library** tab: one tree for everything Kiro keeps.
+  - *Sessions*: your own nestable folders, unfiled sessions grouped by date, tangents and subagent sessions
+    under the session they branched from; rename and move via right-click. Sessions in Kiro's legacy store can
+    be reopened with their history; those in the newer v3 store can be organised and renamed but not reopened
+    (the `kiro-cli acp` server can't load them).
+  - *Skills, Steering, Specs (with task progress), Hooks* under `.kiro/`: create, open, delete, enable/disable.
 
 ## Install
 

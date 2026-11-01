@@ -21,6 +21,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.0")
 
     implementation("org.commonmark:commonmark:0.24.0")
+    implementation("org.commonmark:commonmark-ext-gfm-tables:0.24.0")
 
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit5:2.1.0")
@@ -30,6 +31,8 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
+    // Optional: -PtranscriptOut=<dir> makes TranscriptRenderTest write PNG previews of the chat transcript.
+    providers.gradleProperty("transcriptOut").orNull?.let { systemProperty("transcript.out", it) }
 }
 
 intellijPlatform {

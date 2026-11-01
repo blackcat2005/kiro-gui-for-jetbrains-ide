@@ -84,6 +84,20 @@ class SessionsTest {
     }
 
     @Test
+    fun `the session open in the chat stays visible even when empty`() {
+        legacy("busy", "Has messages", "D:\\proj")
+        legacy("fresh", null, "D:\\proj", prompt = null)
+        val org = SessionOrganizer(home.resolve("org.json")).also { it.load() }
+        val all = SessionScanner(home).scan()
+
+        val without = SessionTree.build(all, org, SessionFilter(projectPath = "D:\\proj"))
+        assertEquals(listOf("Has messages"), without.filterIsInstance<SessionNode.Item>().map { it.name })
+
+        val with = SessionTree.build(all, org, SessionFilter(projectPath = "D:\\proj", keepIds = setOf("fresh")))
+        assertEquals(setOf("Has messages", "New chat"), with.filterIsInstance<SessionNode.Item>().map { it.name }.toSet())
+    }
+
+    @Test
     fun `folders hold roots and tangents travel with the parent`() {
         v3("h1", "sess_main", "Main chat")
         v3("h1", "sess_tan", "tangent-1", parent = "sess_main", reason = "tangent")

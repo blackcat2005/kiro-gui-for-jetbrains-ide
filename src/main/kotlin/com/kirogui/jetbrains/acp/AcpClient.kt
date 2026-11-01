@@ -48,6 +48,20 @@ class AcpClient(
         }
     })
 
+    /**
+     * Updates and notifications for any other session are dropped. One process can host several sessions, and
+     * the one you switched away from may still be finishing; its events must not land in the new transcript.
+     * Null means "accept everything".
+     */
+    @Volatile
+    var activeSession: String? = null
+
+    private fun foreign(params: JsonObject): Boolean {
+        val active = activeSession ?: return false
+        val sid = params["sessionId"]?.jsonPrimitive?.contentOrNull ?: return false
+        return sid != active
+    }
+
     fun start() = connection.start()
 
     fun initialize(): JsonElement = connection.request("initialize", buildJsonObject {
@@ -125,6 +139,19 @@ class AcpClient(
         connection.notify("session/cancel", buildJsonObject { put("sessionId", sessionId) })
     }
 
+    /** Plan credits for the account (Kiro's `/usage`). Null when the command fails or has no credit figures. */
+    fun usage(sessionId: String): PlanUsage? {
+        val result = connection.request("_kiro.dev/commands/execute", buildJsonObject {
+            put("sessionId", sessionId)
+            put("command", buildJsonObject {
+                put("command", "usage")
+                put("args", buildJsonObject {})
+            })
+        }).get(20, TimeUnit.SECONDS) as? JsonObject ?: return null
+        if (result["success"]?.jsonPrimitive?.booleanOrNull == false) return null
+        return PlanUsage.parse(result["data"] as? JsonObject ?: return null)
+    }
+
     private fun handleRequest(method: String, params: JsonObject): JsonElement = when (method) {
         "session/request_permission" -> requestPermission(params)
         "fs/read_text_file" -> {
@@ -169,6 +196,7 @@ class AcpClient(
     }
 
     private fun handleUpdate(params: JsonObject) {
+        if (foreign(params)) return
         val update = params["update"]?.jsonObject ?: return
         val event = when (val type = update.str("sessionUpdate")) {
             "agent_message_chunk" -> AcpEvent.AgentText(update.contentText())
@@ -191,6 +219,7 @@ class AcpClient(
     }
 
     private fun handleCommands(params: JsonObject) {
+        if (foreign(params)) return
         val commands = (params["commands"] as? JsonArray)?.map {
             val o = it.jsonObject
             val subs = ((o["meta"] as? JsonObject)?.get("subcommands") as? JsonArray)
@@ -201,6 +230,7 @@ class AcpClient(
     }
 
     private fun handleMetadata(params: JsonObject) {
+        if (foreign(params)) return
         val credits = (params["meteringUsage"] as? JsonArray)
             ?.mapNotNull { it.jsonObject["value"]?.jsonPrimitive?.doubleOrNull }
             ?.takeIf { it.isNotEmpty() }?.sum()

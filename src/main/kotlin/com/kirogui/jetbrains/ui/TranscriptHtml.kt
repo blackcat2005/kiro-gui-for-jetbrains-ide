@@ -27,6 +27,9 @@ data class Palette(
     val ok: String,
     val err: String,
     val syntax: SyntaxColors = SyntaxColors.LIGHT,
+    /** Optional chat font (CSS family name and point size); null / 0 leave the editor kit's default. */
+    val fontFamily: String? = null,
+    val fontSize: Int = 0,
 )
 
 /**
@@ -39,7 +42,7 @@ object TranscriptHtml {
     fun render(blocks: List<ChatBlock>, p: Palette, linker: FileLinker? = null, linkVersion: Int = 0): String {
         val sb = StringBuilder()
         sb.append("<html><head><style>")
-        sb.append("body { color: #${p.fg}; margin: 8px; }")
+        sb.append("body { color: #${p.fg}; margin: 8px;${font(p)} }")
         sb.append("p { margin-top: 0; margin-bottom: 6px; }")
         sb.append("a { color: #${p.accent}; }")
         sb.append("pre { margin: 0; }")
@@ -69,20 +72,39 @@ object TranscriptHtml {
         return sb.toString()
     }
 
-    private fun welcome(p: Palette) =
-        "<table width=\"100%\" cellpadding=\"14\" cellspacing=\"0\"><tr><td>" +
-            "<font size=\"+1\"><b>Ask Kiro about your project</b></font><br><br>" +
+    /** Quick starters on the empty chat: the label is shown, a click puts the prompt into the input box. */
+    val SUGGESTIONS = listOf(
+        "Explain this project" to "Give me a quick tour of this project: what it does, how it is laid out and where to start reading.",
+        "Find bugs in my changes" to "Review my uncommitted changes and point out bugs, risky spots and anything missing.",
+        "Write tests" to "Suggest and write tests for the code I am working on.",
+        "Summarize recent commits" to "Summarize what changed in the last few commits and why it matters.",
+    )
+
+    private fun font(p: Palette): String = buildString {
+        p.fontFamily?.takeIf { it.isNotBlank() }?.let { append(" font-family: \"").append(it.replace("\"", "")).append("\";") }
+        if (p.fontSize > 0) append(" font-size: ${p.fontSize}pt;")
+    }
+
+    private fun welcome(p: Palette): String {
+        val chips = SUGGESTIONS.indices.joinToString("") { i ->
+            "<table cellpadding=\"6\" cellspacing=\"0\"><tr><td bgcolor=\"#${p.card}\">" +
+                "<a href=\"suggest:$i\"><font color=\"#${p.accent}\">&#10022;&nbsp; ${MarkdownHtml.escape(SUGGESTIONS[i].first)}</font></a>" +
+                "</td></tr></table>" + spacer(4)
+        }
+        return "<table width=\"100%\" cellpadding=\"14\" cellspacing=\"0\"><tr><td>" +
+            "<font size=\"+2\" color=\"#${p.accent}\"><b>&#10022; Hi, I'm Kiro</b></font><br>" +
+            "<font size=\"+1\">What shall we build today?</font><br><br>" +
+            chips + "<br><br>" +
             "<font color=\"#${p.muted}\">" +
-            "&bull; Enter sends, Shift+Enter adds a line<br>" +
-            "&bull; Select code in the editor and press Ctrl+Alt+K to send it here<br>" +
-            "&bull; The <b>/</b> button lists slash commands and your skills<br>" +
-            "&bull; File names in answers open with Ctrl+click<br>" +
-            "&bull; When Kiro wants to change a file you review the diff first" +
+            "Enter sends &middot; Shift+Enter adds a line &middot; <b>/</b> commands &middot; <b>@</b> files and skills<br>" +
+            "Select code in the editor and press Ctrl+Alt+K to send it here.<br>" +
+            "File names in answers open with Ctrl+click. You review every diff before Kiro changes a file." +
             "</font></td></tr></table>"
+    }
 
     private fun user(b: ChatBlock.User, p: Palette) =
         "<table width=\"100%\" cellpadding=\"8\" cellspacing=\"0\"><tr><td bgcolor=\"#${p.card}\">" +
-            "<font color=\"#${p.accent}\"><b>You</b></font><br>${MarkdownHtml.escape(b.text)}</td></tr></table>"
+            "<font color=\"#${p.accent}\"><b>You</b></font><br><font size=\"1\">&nbsp;</font><br>${MarkdownHtml.escape(b.text)}</td></tr></table>"
 
     private fun agent(index: Int, b: ChatBlock.Agent, p: Palette, linker: FileLinker?, linkVersion: Int): String {
         val key = Objects.hash(b.text.length, p, linkVersion, index, linker != null)
@@ -93,7 +115,7 @@ object TranscriptHtml {
         val body = codeBlocks(md, p, index)
         val html = "<table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr>" +
             "<td width=\"3\" bgcolor=\"#${p.accent}\"><font size=\"1\">&nbsp;</font></td><td width=\"10\"><font size=\"1\">&nbsp;</font></td><td>" +
-            "<font color=\"#${p.muted}\"><b>Kiro</b></font>&nbsp;&nbsp;" +
+            "<font color=\"#${p.accent}\"><b>&#10022; Kiro</b></font>&nbsp;&nbsp;" +
             "<a href=\"copy:$index\"><font size=\"-1\">Copy</font></a>" +
             "<table cellpadding=\"0\" cellspacing=\"0\"><tr><td height=\"4\"></td></tr></table>" +
             body + "</td></tr></table>"
@@ -108,7 +130,7 @@ object TranscriptHtml {
             "failed" -> "&#10007;" to p.err
             else -> "&hellip;" to p.muted
         }
-        return "&nbsp;&nbsp;<font color=\"#${p.muted}\">&rsaquo; ${MarkdownHtml.escape(b.title)}</font>&nbsp;" +
+        return "&nbsp;&nbsp;<font color=\"#$color\">&#9679;</font>&nbsp;<font color=\"#${p.muted}\">${MarkdownHtml.escape(b.title)}</font>&nbsp;" +
             "<font color=\"#$color\"><b>$mark</b></font><br>"
     }
 

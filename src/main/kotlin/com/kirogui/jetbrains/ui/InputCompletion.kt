@@ -49,11 +49,18 @@ class InputCompletion(
                     SuggestionKind.FILE -> FileTypeManager.getInstance().getFileTypeByFileName(value.label).icon
                 }
                 append(value.label, SimpleTextAttributes.REGULAR_ATTRIBUTES)
-                if (value.detail.isNotEmpty()) append("   " + value.detail.take(70), SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
+                if (value.detail.isNotEmpty()) {
+                    // Whatever is left of the row after the icon and the name; a long description ends in "…".
+                    val used = icon?.iconWidth.orZero() + getFontMetrics(font).stringWidth(value.label) + JBUI.scale(40)
+                    val room = POPUP_WIDTH - used
+                    val small = getFontMetrics(JBUI.Fonts.smallFont())
+                    val text = Ellipsis.fit(value.detail.replace("\n", " "), room - small.stringWidth("   "), small)
+                    if (text.isNotEmpty()) append("   $text", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
+                }
             }
         }
     }
-    private val scroll = JBScrollPane(list)
+    private val scroll = JBScrollPane(list).apply { horizontalScrollBarPolicy = javax.swing.ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER }
 
     private var popup: JBPopup? = null
     private var current: Completion? = null
@@ -136,7 +143,7 @@ class InputCompletion(
 
     private fun show(count: Int) {
         val rows = count.coerceAtMost(8)
-        val size = Dimension(JBUI.scale(520), rows * list.fixedCellHeight + JBUI.scale(6))
+        val size = Dimension(POPUP_WIDTH, rows * list.fixedCellHeight + JBUI.scale(6))
         val at = anchor(size.height) ?: return hide()
         val existing = popup
         if (existing != null && existing.isVisible) {
@@ -172,5 +179,11 @@ class InputCompletion(
         popup?.cancel()
         popup = null
         current = null
+    }
+
+    private fun Int?.orZero() = this ?: 0
+
+    private companion object {
+        val POPUP_WIDTH = JBUI.scale(520)
     }
 }

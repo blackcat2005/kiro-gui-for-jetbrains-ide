@@ -108,6 +108,15 @@ class TranscriptRenderTest {
     }
 
     @Test
+    fun `empty chat offers starters and the chat font is applied`() {
+        val styled = light.copy(fontFamily = "Inter", fontSize = 15)
+        val html = TranscriptHtml.render(emptyList(), styled, linker)
+        TranscriptHtml.SUGGESTIONS.indices.forEach { assertTrue(html.contains("href=\"suggest:$it\""), "starter $it") }
+        assertTrue(html.contains("font-family: \"Inter\"") && html.contains("font-size: 15pt"), "font rule in the stylesheet")
+        assertTrue(!TranscriptHtml.render(emptyList(), light, linker).contains("margin: 8px; font"), "no font rule by default")
+    }
+
+    @Test
     fun `finished answers are rendered once`() {
         val agent = ChatBlock.Agent(StringBuilder(answer))
         val first = TranscriptHtml.render(listOf(agent), light, linker)

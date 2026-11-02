@@ -14,6 +14,7 @@ import com.kirogui.jetbrains.acp.PermissionHandler
 import com.kirogui.jetbrains.acp.PlanUsage
 import com.kirogui.jetbrains.acp.SessionInfo
 import com.kirogui.jetbrains.kiro.EditPreview
+import com.kirogui.jetbrains.settings.KiroLaunch
 import com.kirogui.jetbrains.settings.KiroSettings
 import com.kirogui.jetbrains.ui.DiffReviewDialog
 import kotlinx.serialization.json.contentOrNull
@@ -103,6 +104,9 @@ class KiroAcpService(private val project: Project) : Disposable {
     @Synchronized
     fun reset() = shutdown()
 
+    /** [reset] off the calling thread (closing the process can block briefly). */
+    fun restart(): CompletableFuture<Unit> = async { reset() }
+
     private fun <T> async(block: () -> T): CompletableFuture<T> {
         val result = CompletableFuture<T>()
         ApplicationManager.getApplication().executeOnPooledThread {
@@ -163,9 +167,11 @@ class KiroAcpService(private val project: Project) : Disposable {
     }
 
     private fun launch(cwd: String): AcpClient {
-        val cmd = GeneralCommandLine(KiroSettings.getInstance().state.kiroPath, "acp")
+        val settings = KiroSettings.getInstance().state
+        val cmd = GeneralCommandLine(KiroLaunch.command(settings.kiroPath, settings.kiroArgs))
             .withWorkDirectory(cwd)
             .withCharset(Charsets.UTF_8)
+            .withEnvironment(KiroLaunch.environment(settings.kiroEnv))
         val proc = cmd.createProcess()
         Thread({
             proc.errorStream.bufferedReader().forEachLine { log.info("kiro-cli: $it") }

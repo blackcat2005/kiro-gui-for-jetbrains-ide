@@ -1,10 +1,12 @@
 package com.kirogui.jetbrains.settings
 
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.PersistentStateComponent
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
 import com.intellij.openapi.components.service
+import com.intellij.util.messages.Topic
 
 @Service(Service.Level.APP)
 @State(name = "KiroGuiSettings", storages = [Storage("kiro-gui.xml")])
@@ -13,6 +15,21 @@ class KiroSettings : PersistentStateComponent<KiroSettings.State> {
     class State {
         /** Command or absolute path of the Kiro CLI. IDEs often lack the shell PATH, so absolute is safest. */
         var kiroPath: String = "kiro-cli"
+
+        /** Extra arguments placed after `acp`, shell-style quoting (e.g. `--agent my-agent --trust-all-tools`). */
+        var kiroArgs: String = ""
+
+        /** Extra environment variables for the process, one `KEY=VALUE` per line. */
+        var kiroEnv: String = ""
+
+        /** Chat font; blank family / zero size mean "follow the IDE font" (size: one point larger). */
+        var chatFontFamily: String = ""
+        var chatFontSize: Int = 0
+    }
+
+    /** Published after the settings page is applied, so open chats can restyle themselves. */
+    fun interface Listener {
+        fun settingsChanged()
     }
 
     private var state = State()
@@ -23,7 +40,13 @@ class KiroSettings : PersistentStateComponent<KiroSettings.State> {
         this.state = state
     }
 
+    fun notifyChanged() {
+        ApplicationManager.getApplication().messageBus.syncPublisher(TOPIC).settingsChanged()
+    }
+
     companion object {
+        val TOPIC: Topic<Listener> = Topic.create("Kiro GUI settings", Listener::class.java)
+
         fun getInstance(): KiroSettings = service()
     }
 }

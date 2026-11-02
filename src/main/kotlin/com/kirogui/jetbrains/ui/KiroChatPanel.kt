@@ -16,11 +16,15 @@ import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
+import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.ui.AnimatedIcon
 import com.intellij.ui.ColorUtil
 import com.intellij.ui.JBColor
+import com.intellij.ui.ColoredListCellRenderer
+import com.intellij.ui.RoundedLineBorder
 import com.intellij.ui.SimpleListCellRenderer
+import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
@@ -41,6 +45,7 @@ import com.kirogui.jetbrains.kiro.TranscriptReader
 import com.kirogui.jetbrains.kiro.KiroResources
 import com.kirogui.jetbrains.kiro.SkillRef
 import com.kirogui.jetbrains.service.KiroAcpService
+import com.kirogui.jetbrains.settings.KiroSettings
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.FlowLayout
@@ -81,6 +86,10 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
         emptyText.text = DEFAULT_HINT
     }
     private val actionButton = JButton("Send", AllIcons.Actions.Execute)
+    private val retryButton = JButton("Retry", AllIcons.Actions.Refresh).apply {
+        isVisible = false
+        toolTipText = "Restart kiro-cli and reconnect"
+    }
     private val status = JBLabel(" ")
 
     // Account-wide plan credits, top right of the header: a small bar plus "30.6 / 50 credits · 61%".
@@ -114,6 +123,9 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
     private var viewOnly = false // a stored session Kiro can't continue is on screen
     private var replayCovered = false // history already shown from the files, so the agent's replay is redundant
     private var displayedId: String? = null
+    private var failed = false // kiro-cli didn't start or died; the Retry button is showing
+    private var lastSessionId: String? = null // so a reconnect can pick the conversation up again
+    private var lastCwd: String? = null
 
     /** Lets the host show/hide the session sidebar; the header toggle only appears once this is set. */
     interface SidebarToggle {
@@ -155,6 +167,8 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
         add(composer(), BorderLayout.SOUTH)
 
         actionButton.addActionListener { if (busy) service.cancel() else send() }
+        retryButton.addActionListener { reconnect() }
+        applyFont()
         planPanel.addMouseListener(object : java.awt.event.MouseAdapter() {
             override fun mouseClicked(e: java.awt.event.MouseEvent) = refreshPlanUsage(force = true)
         })
@@ -186,8 +200,9 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
             ApplicationManager.getApplication().invokeLater { onEvent(event) }
         }
         // Colours are embedded in the transcript HTML, so a theme switch just needs a re-render.
-        ApplicationManager.getApplication().messageBus.connect(parent)
-            .subscribe(LafManagerListener.TOPIC, LafManagerListener { renderTranscript() })
+        val bus = ApplicationManager.getApplication().messageBus.connect(parent)
+        bus.subscribe(LafManagerListener.TOPIC, LafManagerListener { applyFont(); renderTranscript() })
+        bus.subscribe(KiroSettings.TOPIC, KiroSettings.Listener { applyFont(); renderTranscript() })
 
         renderTranscript()
         connect()
@@ -212,6 +227,7 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
                 override fun getActionUpdateThread() = ActionUpdateThread.EDT
             })
             add(action("Slash commands and skills", AllIcons.Actions.Lightning) { showCommandMenu() })
+            add(action("Restart kiro-cli", AllIcons.Actions.Refresh) { reconnect(confirmIfBusy = true) })
             // The sidebar has a New chat button of its own; show this one only when the sidebar is hidden.
             add(object : DumbAwareAction("New chat", "Start a new chat", AllIcons.General.Add) {
                 override fun actionPerformed(e: AnActionEvent) = newChat()
@@ -250,13 +266,18 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
 
     private fun composer(): JPanel {
         val box = JPanel(BorderLayout()).apply {
-            border = JBUI.Borders.compound(JBUI.Borders.customLine(JBColor.border()), JBUI.Borders.empty(2))
+            // A softly rounded outline in the accent colour reads friendlier than a hard rectangle.
+            border = JBUI.Borders.compound(RoundedLineBorder(ACCENT, JBUI.scale(14), 1), JBUI.Borders.empty(4, 6, 2, 6))
             add(JBScrollPane(input).apply { border = JBUI.Borders.empty() }, BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.RIGHT, 4, 2)).apply { add(actionButton) }, BorderLayout.SOUTH)
         }
         return JPanel(BorderLayout()).apply {
-            border = JBUI.Borders.empty(6)
-            add(status.apply { border = JBUI.Borders.empty(0, 2, 4, 2) }, BorderLayout.NORTH)
+            border = JBUI.Borders.empty(8)
+            add(JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
+                border = JBUI.Borders.empty(0, 2, 6, 2)
+                add(status, BorderLayout.CENTER)
+                add(retryButton, BorderLayout.EAST)
+            }, BorderLayout.NORTH)
             add(box, BorderLayout.CENTER)
         }
     }
@@ -332,6 +353,7 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
         if (!session.resumable) return
 
         val dir = session.cwd?.takeIf { java.io.File(it).isDirectory } ?: project.basePath ?: System.getProperty("user.home")
+        lastCwd = dir
         service.resume(session.id, dir).whenComplete { info, error ->
             ApplicationManager.getApplication().invokeLater {
                 if (gen != generation) return@invokeLater
@@ -375,8 +397,9 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
                 if (gen != generation) return@invokeLater
                 opening = false
                 if (error != null) {
-                    setTransient("Cannot start kiro-cli: ${error.cause?.message ?: error.message} — check Settings → Tools → Kiro")
+                    fail("Cannot start kiro-cli: ${error.cause?.message ?: error.message} — check Settings → Tools → Kiro")
                 } else {
+                    setFailed(false)
                     setTransient(null)
                     populate(info)
                     onSessionsChanged?.invoke()
@@ -387,6 +410,7 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
     }
 
     private fun populate(info: SessionInfo) {
+        lastSessionId = info.sessionId
         populating = true
         try {
             fill(agentBox, info.modes, info.currentModeId)
@@ -475,13 +499,76 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
                 if (gen != generation) return@invokeLater
                 opening = false
                 if (error != null) {
-                    setTransient("Cannot start kiro-cli: ${error.cause?.message ?: error.message} — check Settings → Tools → Kiro")
+                    fail("Cannot start kiro-cli: ${error.cause?.message ?: error.message} — check Settings → Tools → Kiro")
                 } else {
+                    setFailed(false)
                     setTransient(null)
                     populate(info)
                 }
                 updateComposer()
                 onSessionsChanged?.invoke()
+            }
+        }
+        onSessionsChanged?.invoke()
+    }
+
+    private fun setFailed(value: Boolean) {
+        failed = value
+        retryButton.isVisible = value
+    }
+
+    /** Shows [message] in the status line and offers the Retry button. */
+    private fun fail(message: String) {
+        setFailed(true)
+        setTransient(message)
+    }
+
+    /**
+     * Restarts the kiro-cli process and reconnects: first to the conversation that was open (its history is already
+     * on screen, so the agent's replay is dropped), else to a fresh session.
+     */
+    fun reconnect(confirmIfBusy: Boolean = false) {
+        if (confirmIfBusy && busy &&
+            Messages.showYesNoDialog(project, "Kiro is still working on a reply. Stop it and restart kiro-cli?", "Kiro", Messages.getWarningIcon()) != Messages.YES
+        ) return
+        val gen = ++generation
+        setFailed(false)
+        setBusy(false)
+        opening = true
+        val resumeId = (displayedId ?: lastSessionId)?.takeIf { !viewOnly }
+        replayCovered = resumeId != null
+        setTransient("Restarting kiro-cli…")
+        updateComposer()
+        val dir = lastCwd ?: project.basePath ?: System.getProperty("user.home")
+
+        fun finish(info: SessionInfo?, error: Throwable?, resumed: Boolean) {
+            ApplicationManager.getApplication().invokeLater {
+                if (gen != generation) return@invokeLater
+                opening = false
+                replayCovered = false
+                if (error != null || info == null) {
+                    fail("Cannot start kiro-cli: ${error?.cause?.message ?: error?.message} — check Settings → Tools → Kiro")
+                } else {
+                    setTransient(null)
+                    populate(info)
+                    if (!resumed && resumeId != null && blocks.isNotEmpty()) {
+                        notice("Reconnected with a new session — the messages above are history only.")
+                    }
+                    flash("Reconnected")
+                }
+                updateComposer()
+                onSessionsChanged?.invoke()
+            }
+        }
+
+        service.restart().whenComplete { _, _ ->
+            if (resumeId != null) {
+                service.resume(resumeId, dir).whenComplete { info, error ->
+                    if (error != null) service.newSession().whenComplete { i, e -> finish(i, e, resumed = false) }
+                    else finish(info, null, resumed = true)
+                }
+            } else {
+                service.start().whenComplete { info, error -> finish(info, error, resumed = false) }
             }
         }
         onSessionsChanged?.invoke()
@@ -573,6 +660,7 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
             is AcpEvent.Closed -> {
                 notice("kiro-cli exited${event.reason?.let { ": $it" } ?: ""}")
                 opening = false
+                setFailed(true)
                 setBusy(false)
             }
             is AcpEvent.AgentThought, is AcpEvent.Other -> Unit
@@ -584,21 +672,35 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
     /** Slash commands advertised by Kiro plus the skills found on disk; picking one fills the input box. */
     private fun showCommandMenu() {
         val resources = KiroResources(project.basePath?.let { Path.of(it) }, Path.of(System.getProperty("user.home")))
-        val entries = commands.map { it.name to "${it.name} — ${it.description}" } +
-            resources.skills().map { "/${it.name}" to "/${it.name} — skill (${it.scope.label}): ${it.summary}" }
+        val entries = commands.map { MenuEntry(it.name, it.description) } +
+            resources.skills().map { MenuEntry("/${it.name}", "skill (${it.scope.label}): ${it.summary}") }
         if (entries.isEmpty()) {
             notice("No slash commands yet — Kiro sends them once the session is ready.")
             return
         }
         JBPopupFactory.getInstance().createPopupChooserBuilder(entries)
-            .setRenderer(SimpleListCellRenderer.create("") { it.second })
-            .setNamerForFiltering { it.second }
+            .setRenderer(menuRenderer())
+            .setNamerForFiltering { "${it.name} ${it.detail}" }
             .setItemChosenCallback { chosen ->
-                input.text = chosen.first + " "
+                input.text = chosen.name + " "
                 input.requestFocusInWindow()
             }
             .createPopup()
             .showUnderneathOf(headerToolbar)
+    }
+
+    private class MenuEntry(val name: String, val detail: String)
+
+    /** Name, then the description in grey, cut with "…" so a long description can never widen the popup. */
+    private fun menuRenderer() = object : ColoredListCellRenderer<MenuEntry>() {
+        override fun customizeCellRenderer(list: javax.swing.JList<out MenuEntry>, value: MenuEntry?, index: Int, selected: Boolean, hasFocus: Boolean) {
+            value ?: return
+            append(value.name, SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES)
+            val small = getFontMetrics(JBUI.Fonts.smallFont())
+            val room = MENU_WIDTH - getFontMetrics(font).stringWidth(value.name) - JBUI.scale(40)
+            val text = Ellipsis.fit(value.detail.replace('\n', ' '), room, small)
+            if (text.isNotEmpty()) append("   $text", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
+        }
     }
 
     private fun onLink(e: HyperlinkEvent) {
@@ -612,6 +714,9 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
                     val click = e.inputEvent as? java.awt.event.MouseEvent
                     if (click != null && (click.isControlDown || click.isMetaDown)) openFileRef(file)
                     else flash("Hold Ctrl and click to open ${file.target}")
+                }
+                href.startsWith("suggest:") -> TranscriptHtml.SUGGESTIONS.getOrNull(href.removePrefix("suggest:").toIntOrNull() ?: -1)?.let {
+                    prefillInput(it.second)
                 }
                 href.startsWith("copycode:") -> copyCode(href)
                 href.startsWith("copy:") -> copyBlock(href.removePrefix("copy:").toIntOrNull())
@@ -671,11 +776,26 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
             muted = hex(UIUtil.getContextHelpForeground()),
             card = hex(ColorUtil.mix(bg, fg, 0.07)),
             code = hex(ColorUtil.mix(bg, fg, 0.11)),
-            accent = hex(JBUI.CurrentTheme.Link.Foreground.ENABLED),
+            accent = hex(ACCENT),
             ok = hex(JBColor(0x2E7D32, 0x62B543)),
             err = hex(JBColor(0xC62828, 0xFF6B68)),
             syntax = if (JBColor.isBright()) SyntaxColors.LIGHT else SyntaxColors.DARK,
+            fontFamily = chatFontFamily(),
+            fontSize = chatFontSize(),
         )
+    }
+
+    private fun chatFontFamily(): String? = KiroSettings.getInstance().state.chatFontFamily.ifBlank { null }
+
+    /** The IDE's UI font is on the small side for reading answers, so the default is one point larger. */
+    private fun chatFontSize(): Int = KiroSettings.getInstance().state.chatFontSize.takeIf { it > 0 } ?: (JBUI.Fonts.label().size + 1)
+
+    /** The input follows the same font as the transcript. */
+    private fun applyFont() {
+        val base = JBUI.Fonts.label()
+        input.font = java.awt.Font(chatFontFamily() ?: base.family, java.awt.Font.PLAIN, chatFontSize())
+        input.border = JBUI.Borders.empty(4, 4)
+        input.revalidate()
     }
 
     /** Re-renders the whole transcript; keeps the user's scroll position unless they were following the tail. */
@@ -693,6 +813,8 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
     private companion object {
         const val USAGE_MIN_INTERVAL_MS = 10_000L
         const val HEADER_NARROW_PX = 340
+        val ACCENT = JBColor(0x7A3FF2, 0xB591FF)
+        val MENU_WIDTH = JBUI.scale(520)
         const val DEFAULT_HINT = "Ask Kiro…   / commands · @ files and skills · Shift+Enter new line"
     }
 }

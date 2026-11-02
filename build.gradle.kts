@@ -38,7 +38,7 @@ tasks.test {
 intellijPlatform {
     pluginConfiguration {
         ideaVersion {
-            sinceBuild = "243"
+            sinceBuild = "251"
         }
     }
 }
@@ -47,7 +47,7 @@ kotlin {
     jvmToolchain(21)
 }
 
-// IDE 2024.3 bundles Kotlin stdlib 2.0.x; don't use newer stdlib APIs.
+// IDE 2025.1 bundles Kotlin stdlib 2.1.x; staying on the 2.0 API level is harmless; don't use newer stdlib APIs.
 kotlin {
     compilerOptions {
         apiVersion.set(org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_2_0)

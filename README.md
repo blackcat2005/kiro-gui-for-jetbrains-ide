@@ -4,7 +4,7 @@ A JetBrains IDE plugin that gives [Kiro](https://kiro.dev) a native chat GUI. It
 `kiro-cli acp` over the [Agent Client Protocol](https://agentclientprotocol.com) (JSON-RPC over stdio),
 so it needs no embedded browser and no local HTTP server.
 
-Requires IDE build 243+ (2024.3 and newer) and an installed, signed-in `kiro-cli`.
+Requires IDE build 251+ (2025.1 and newer) and an installed, signed-in `kiro-cli`.
 
 ## Features
 

@@ -14,7 +14,7 @@ import kotlin.test.assertTrue
 class TranscriptRenderTest {
 
     private val light = Palette("1F1F1F", "6E6E6E", "F0F2F5", "EAECEF", "2F6FED", "2E7D32", "C62828", SyntaxColors.LIGHT)
-    private val dark = Palette("DFE1E5", "8C8F94", "2F3136", "26282C", "6BA4FF", "62B543", "FF6B68", SyntaxColors.DARK)
+    private val dark = Palette("DFE1E5", "8C8F94", "2F3136", "26282C", "6BA4FF", "62B543", "FF6B68", SyntaxColors.DARK, diffAdd = "2A4A33", diffDel = "553030", diffHunk = "3A3F5C")
 
     private val known = setOf("LoginService.kt", "src/test/LoginTest.kt", "src/main/LoginService.kt")
     private val linker = FileLinker { raw -> raw.takeIf { it in known } }
@@ -128,5 +128,29 @@ class TranscriptRenderTest {
         assertTrue(agent.cachedHtml !== cached, "growing text re-renders")
         TranscriptHtml.render(listOf(agent), dark, linker)
         assertTrue(agent.cachedHtml?.contains("CF8E6D") == true, "a theme change re-renders")
+    }
+
+    @Test
+    fun `diffs are drawn as tinted rows with copy links, and attachments as cards`() {
+        val diff = ChatBlock.Agent(StringBuilder("Change:\n\n```diff\n--- a/src/A.kt\n+++ b/src/A.kt\n@@ -1,2 +1,2 @@\n keep\n-old\n+new\n```\n"))
+        val user = ChatBlock.User(
+            "Please review",
+            listOf(
+                Attachment.File("src/A.kt"),
+                Attachment.Snippet((1..9).joinToString("\n") { "val v$it = $it" }, "kt", "src/A.kt:1-9"),
+                Attachment.Snippet("pasted\ntext"),
+                ImageAttachments.fromImage(BufferedImage(400, 300, BufferedImage.TYPE_INT_ARGB))!!,
+            ),
+        )
+        val blocks = listOf(user, diff)
+        val html = TranscriptHtml.render(blocks, light, linker)
+        assertTrue(html.contains("bgcolor=\"#${light.diffAdd}\"") && html.contains("bgcolor=\"#${light.diffDel}\""), "added and removed rows are tinted")
+        assertTrue(html.contains("href=\"copycode:1:0\"") && html.contains("href=\"copycode:1:0:new\""), "copy the diff or only the new side")
+        assertTrue(html.contains("src/A.kt") && html.contains(">DIFF<"), "diff header names the file")
+        assertTrue(html.contains("kirofile:") && html.contains("4 more lines"), "file card links, long snippet is cut")
+        assertTrue(html.contains("PASTED"), "pasted text card")
+        assertTrue(html.contains("<img src=\"file:") && html.contains("IMAGE"), "image card shows a thumbnail")
+        paint(blocks, light, Color.WHITE, "transcript-diff-light.png")
+        paint(blocks, dark, Color(0x2B, 0x2D, 0x30), "transcript-diff-dark.png")
     }
 }

@@ -128,6 +128,10 @@ object CodeHighlighter {
         "patch" to "diff",
     )
 
+    /** True for a fence that holds a unified diff (`diff`, `patch`). */
+    fun isDiff(lang: String?): Boolean =
+        lang?.trim()?.lowercase()?.substringBefore(' ')?.let { ALIASES[it] ?: it } == "diff"
+
     /** [lang] is the fence's info string (e.g. `kotlin`); null/unknown gives escaped plain text. */
     fun highlight(code: String, lang: String?, c: SyntaxColors): String {
         val key = lang?.trim()?.lowercase()?.substringBefore(' ')?.let { ALIASES[it] ?: it }

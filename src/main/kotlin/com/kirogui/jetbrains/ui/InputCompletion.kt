@@ -62,6 +62,9 @@ class InputCompletion(
     }
     private val scroll = JBScrollPane(list).apply { horizontalScrollBarPolicy = javax.swing.ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER }
 
+    /** When set, picking a file with "@" calls this (with the project-relative path) instead of inserting text. */
+    var onFile: ((String) -> Unit)? = null
+
     private var popup: JBPopup? = null
     private var current: Completion? = null
     private var pending = false
@@ -113,8 +116,16 @@ class InputCompletion(
         val chosen = list.selectedValue ?: return
         applying = true
         try {
-            input.replaceRange(chosen.insert, c.start, c.end)
-            input.caretPosition = c.start + chosen.insert.length
+            val path = chosen.path
+            if (chosen.kind == SuggestionKind.FILE && path != null && onFile != null) {
+                // A file mention becomes a chip next to the input rather than text inside the prompt.
+                input.replaceRange("", c.start, c.end)
+                input.caretPosition = c.start
+                onFile?.invoke(path)
+            } else {
+                input.replaceRange(chosen.insert, c.start, c.end)
+                input.caretPosition = c.start + chosen.insert.length
+            }
         } finally {
             applying = false
         }

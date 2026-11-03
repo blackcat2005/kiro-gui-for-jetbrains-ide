@@ -42,11 +42,12 @@ intellijPlatform {
         }
         changeNotes = """
             <ul>
-                <li>Chat font family and size settings; livelier look with starter prompts on an empty chat</li>
-                <li>kiro-cli arguments and environment variables in Settings | Tools | Kiro</li>
-                <li>Retry and Restart buttons reconnect to the open conversation when kiro-cli fails</li>
-                <li>Long descriptions in the / and @ popups are shortened instead of overflowing</li>
-                <li>New plugin, session and tool window icons; requires IntelliJ 2025.1 or newer</li>
+                <li>Attach files, selected code and images: Attach button, @ file picker, Ctrl+V for screenshots and files; the open editor file is attached automatically (can be turned off)</li>
+                <li>Long pastes become compact chips; "Send to Kiro" attaches the selection as a snippet instead of filling the input</li>
+                <li>Diffs are shown as coloured rows with Copy diff / Copy new</li>
+                <li>Shift+Enter inserts a new line</li>
+                <li>Run kiro-cli through a shell of your choice (PowerShell, cmd, bash, WSL or custom)</li>
+                <li>Notification (balloon and system) when Kiro finishes a reply</li>
             </ul>
         """.trimIndent()
     }

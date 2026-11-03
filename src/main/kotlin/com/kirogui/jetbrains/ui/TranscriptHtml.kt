@@ -4,7 +4,7 @@ import com.kirogui.jetbrains.kiro.FileLinker
 import java.util.Objects
 
 sealed interface ChatBlock {
-    class User(val text: String) : ChatBlock
+    class User(val text: String, val attachments: List<Attachment> = emptyList()) : ChatBlock
 
     class Agent(val text: StringBuilder = StringBuilder()) : ChatBlock {
         // Rendering markdown + highlighting is the costly part and finished answers never change, so keep the result.
@@ -30,6 +30,10 @@ data class Palette(
     /** Optional chat font (CSS family name and point size); null / 0 leave the editor kit's default. */
     val fontFamily: String? = null,
     val fontSize: Int = 0,
+    /** Row backgrounds in diffs: added, removed, hunk header. */
+    val diffAdd: String = "DDF1E0",
+    val diffDel: String = "F9DEDE",
+    val diffHunk: String = "E4E8F5",
 )
 
 /**
@@ -97,14 +101,47 @@ object TranscriptHtml {
             chips + "<br><br>" +
             "<font color=\"#${p.muted}\">" +
             "Enter sends &middot; Shift+Enter adds a line &middot; <b>/</b> commands &middot; <b>@</b> files and skills<br>" +
-            "Select code in the editor and press Ctrl+Alt+K to send it here.<br>" +
+            "Select code in the editor and press Ctrl+Alt+K to attach it. Long pastes become chips too.<br>" +
             "File names in answers open with Ctrl+click. You review every diff before Kiro changes a file." +
             "</font></td></tr></table>"
     }
 
-    private fun user(b: ChatBlock.User, p: Palette) =
-        "<table width=\"100%\" cellpadding=\"8\" cellspacing=\"0\"><tr><td bgcolor=\"#${p.card}\">" +
-            "<font color=\"#${p.accent}\"><b>You</b></font><br><font size=\"1\">&nbsp;</font><br>${MarkdownHtml.escape(b.text)}</td></tr></table>"
+    private fun user(b: ChatBlock.User, p: Palette): String {
+        val text = if (b.text.isBlank()) "" else "<br><font size=\"1\">&nbsp;</font><br>${MarkdownHtml.escape(b.text)}"
+        val cards = b.attachments.joinToString("") { spacer(6) + attachmentCard(it, p) }
+        return "<table width=\"100%\" cellpadding=\"8\" cellspacing=\"0\"><tr><td bgcolor=\"#${p.card}\">" +
+            "<font color=\"#${p.accent}\"><b>You</b></font>$text$cards</td></tr></table>"
+    }
+
+    /** A compact card under the message: a file name, or the first lines of a snippet with a count of the rest. */
+    private fun attachmentCard(a: Attachment, p: Palette): String {
+        val label = "<font size=\"-2\" color=\"#${p.muted}\">"
+        val body = when (a) {
+            is Attachment.File ->
+                "${label}FILE</font>&nbsp;&nbsp;<a href=\"${MarkdownHtml.fileLink(a.path, null)}\"><font color=\"#${p.accent}\">${MarkdownHtml.escape(a.path)}</font></a>"
+            is Attachment.Image -> {
+                val url = ImageAttachments.thumbnailUrl(a)
+                val (w, h) = ImageAttachments.thumbnailSize(a)
+                label + "IMAGE</font>&nbsp;&nbsp;<b>${MarkdownHtml.escape(a.label)}</b>" +
+                    (if (url != null) "<br><img src=\"$url\" width=\"$w\" height=\"$h\">" else "")
+            }
+            is Attachment.Snippet -> {
+                val (head, more) = Attachments.preview(a.code)
+                label + (if (a.source == null) "PASTED" else "CODE") + "</font>&nbsp;&nbsp;<b>${MarkdownHtml.escape(a.label)}</b><br>" +
+                    "<font size=\"-1\"><tt>${codeHtml(head, a.language.ifEmpty { null }, p)}</tt></font>" +
+                    (if (more > 0) "<br><font size=\"-2\" color=\"#${p.muted}\"><i>&hellip; $more more ${if (more == 1) "line" else "lines"}</i></font>" else "")
+            }
+        }
+        return "<table width=\"100%\" cellpadding=\"5\" cellspacing=\"0\"><tr><td bgcolor=\"#${p.code}\">$body</td></tr></table>"
+    }
+
+    /** Highlighted code with line breaks and indentation made explicit, so Swing can wrap it at spaces. */
+    private fun codeHtml(raw: String, lang: String?, p: Palette): String =
+        CodeHighlighter.highlight(raw, lang, p.syntax)
+            .replace("\t", "    ")
+            .replace("  ", "&nbsp; ")
+            .replace("\n", "<br>")
+            .replace("<br> ", "<br>&nbsp;")
 
     private fun agent(index: Int, b: ChatBlock.Agent, p: Palette, linker: FileLinker?, linkVersion: Int): String {
         val key = Objects.hash(b.text.length, p, linkVersion, index, linker != null)
@@ -149,16 +186,44 @@ object TranscriptHtml {
         return codeBlock.replace(html) { m ->
             val lang = m.groupValues[1].ifEmpty { null }
             val raw = unescape(m.groupValues[2]).trimEnd('\n')
-            val body = CodeHighlighter.highlight(raw, lang, p.syntax)
-                .replace("\t", "    ")
-                .replace("  ", "&nbsp; ")
-                .replace("\n", "<br>")
-                .replace("<br> ", "<br>&nbsp;")
+            val index = n++
+            if (CodeHighlighter.isDiff(lang)) return@replace diffBlock(raw, p, blockIndex, index)
             val header = "<font size=\"-2\" color=\"#${p.muted}\">${(lang ?: "code").uppercase()}</font>&nbsp;&nbsp;" +
-                "<a href=\"copycode:$blockIndex:${n++}\"><font size=\"-2\">Copy</font></a><br>"
+                "<a href=\"copycode:$blockIndex:$index\"><font size=\"-2\">Copy</font></a><br>"
             "<table width=\"100%\" cellpadding=\"8\" cellspacing=\"0\"><tr><td bgcolor=\"#${p.code}\">" +
-                header + "<font color=\"#${p.fg}\"><tt>$body</tt></font></td></tr></table>" + spacer(6)
+                header + "<font color=\"#${p.fg}\"><tt>${codeHtml(raw, lang, p)}</tt></font></td></tr></table>" + spacer(6)
         }
+    }
+
+    /**
+     * A diff as one row per line: a narrow +/- column and the text, on a tinted background (green added, red
+     * removed), with the file name and counts on top. Copy takes the diff as written, or just the new side.
+     */
+    private fun diffBlock(raw: String, p: Palette, blockIndex: Int, index: Int): String {
+        val lines = DiffText.parse(raw)
+        val (added, removed) = DiffText.stats(lines)
+        val file = DiffText.path(lines)
+        val small = "<font size=\"-2\" color=\"#${p.muted}\">"
+        val header = small + "DIFF</font>&nbsp;&nbsp;" +
+            (file?.let { "<b>${MarkdownHtml.escape(it)}</b>&nbsp;&nbsp;" } ?: "") +
+            "<font size=\"-2\" color=\"#${p.syntax.added}\"><b>+$added</b></font>&nbsp;" +
+            "<font size=\"-2\" color=\"#${p.syntax.removed}\"><b>&minus;$removed</b></font>&nbsp;&nbsp;" +
+            "<a href=\"copycode:$blockIndex:$index\"><font size=\"-2\">Copy diff</font></a>&nbsp;&nbsp;" +
+            "<a href=\"copycode:$blockIndex:$index:new\"><font size=\"-2\">Copy new</font></a><br>"
+        val rows = lines.joinToString("") { l ->
+            val (bg, fg, mark) = when (l.kind) {
+                DiffText.Kind.ADD -> Triple(p.diffAdd, p.syntax.added, "+")
+                DiffText.Kind.DEL -> Triple(p.diffDel, p.syntax.removed, "&minus;")
+                DiffText.Kind.HUNK -> Triple(p.diffHunk, p.syntax.keyword, "")
+                DiffText.Kind.HEADER -> Triple(p.code, p.muted, "")
+                DiffText.Kind.CONTEXT -> Triple(p.code, p.fg, "")
+            }
+            val text = codeHtml(l.text, null, p).ifEmpty { "&nbsp;" }
+            "<tr><td width=\"14\" valign=\"top\" bgcolor=\"#$bg\"><font color=\"#$fg\"><tt><b>$mark</b></tt></font></td>" +
+                "<td bgcolor=\"#$bg\"><font color=\"#${if (l.kind == DiffText.Kind.CONTEXT) p.fg else fg}\"><tt>$text</tt></font></td></tr>"
+        }
+        return "<table width=\"100%\" cellpadding=\"8\" cellspacing=\"0\"><tr><td bgcolor=\"#${p.code}\">$header" +
+            "<table width=\"100%\" cellpadding=\"2\" cellspacing=\"0\">$rows</table></td></tr></table>" + spacer(6)
     }
 
     /** commonmark escapes `& < > "` inside code; the highlighter wants the raw text. */

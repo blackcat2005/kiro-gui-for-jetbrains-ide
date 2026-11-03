@@ -6,9 +6,11 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.wm.ToolWindowManager
-import java.io.File
 
-/** Editor context menu: put the selected code (with file and line range) into the Kiro input box. */
+/**
+ * Editor context menu: attach the selected code (with file and line range) to the Kiro chat as a snippet chip,
+ * kept apart from the prompt you type. With nothing selected the whole file is attached.
+ */
 class SendSelectionToKiroAction : AnAction(), DumbAware {
 
     override fun getActionUpdateThread() = ActionUpdateThread.BGT
@@ -22,33 +24,13 @@ class SendSelectionToKiroAction : AnAction(), DumbAware {
         val project = e.project ?: return
         val editor = e.getData(CommonDataKeys.EDITOR) ?: return
         val file = e.getData(CommonDataKeys.VIRTUAL_FILE)
-        val sel = editor.selectionModel
-        val doc = editor.document
-
-        val ref = file?.let { vf ->
-            val base = project.basePath?.let { File(it).toPath() }
-            val rel = try {
-                base?.relativize(File(vf.path).toPath())?.toString()?.replace('\\', '/')
-            } catch (_: IllegalArgumentException) {
-                null
-            } ?: vf.path
-            if (sel.hasSelection()) {
-                val from = doc.getLineNumber(sel.selectionStart) + 1
-                val to = doc.getLineNumber(sel.selectionEnd) + 1
-                "$rel:$from-$to"
-            } else rel
-        } ?: "selection"
-
-        val text = if (sel.hasSelection()) {
-            val lang = file?.extension.orEmpty()
-            "In `$ref`:\n```$lang\n${sel.selectedText}\n```\n"
-        } else {
-            "Regarding `$ref`: "
-        }
+        val item = AttachmentSources.selection(project, editor, file)
+            ?: file?.let { AttachmentSources.file(project, it) }
+            ?: return
 
         val toolWindow = ToolWindowManager.getInstance(project).getToolWindow("Kiro") ?: return
         toolWindow.activate {
-            (toolWindow.contentManager.getContent(0)?.component as? KiroChatHost)?.chat?.appendToInput(text)
+            (toolWindow.contentManager.getContent(0)?.component as? KiroChatHost)?.chat?.attach(item)
         }
     }
 }

@@ -10,7 +10,13 @@ import com.intellij.openapi.actionSystem.ToggleAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.fileChooser.FileChooser
+import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
+import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.FileEditorManagerEvent
+import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.project.DumbAwareAction
@@ -34,6 +40,7 @@ import com.intellij.util.ui.UIUtil
 import com.kirogui.jetbrains.acp.AcpEvent
 import com.kirogui.jetbrains.acp.Choice
 import com.kirogui.jetbrains.acp.PlanUsage
+import com.kirogui.jetbrains.acp.PromptImage
 import com.kirogui.jetbrains.acp.SessionInfo
 import com.kirogui.jetbrains.acp.UsageLevel
 import com.kirogui.jetbrains.acp.SlashCommand
@@ -53,7 +60,9 @@ import java.awt.datatransfer.StringSelection
 import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
 import java.nio.file.Path
+import javax.swing.BoxLayout
 import javax.swing.DefaultComboBoxModel
+import javax.swing.JComponent
 import javax.swing.JButton
 import javax.swing.JEditorPane
 import javax.swing.JPanel
@@ -79,11 +88,36 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
     }
     private val scroll = JBScrollPane(transcript).apply { border = JBUI.Borders.empty() }
 
-    private val input = JBTextArea(2, 40).apply {
+    private val input = object : JBTextArea(2, 40) {
+        /** A long paste becomes a chip ("Pasted text - 120 lines") instead of flooding the input box. */
+        override fun paste() {
+            val text = try {
+                CopyPasteManager.getInstance().getContents<String>(java.awt.datatransfer.DataFlavor.stringFlavor)
+            } catch (_: Exception) {
+                null
+            }
+            when {
+                text != null && Attachments.isLongPaste(text) -> attach(Attachment.Snippet(text.replace("\r\n", "\n")))
+                text != null -> super.paste()
+                !pasteNonText() -> super.paste()
+            }
+        }
+    }.apply {
         lineWrap = true
         wrapStyleWord = true
         border = JBUI.Borders.empty(4, 6)
         emptyText.text = DEFAULT_HINT
+    }
+    private val attachments = mutableListOf<Attachment>()
+    private var openFile: String? = null // the file in the selected editor tab, as a project-relative path
+    private var openFileSkipped: String? = null // the user clicked x on its chip; applies until the tab changes
+    private val attachmentsPanel = JPanel().apply {
+        layout = BoxLayout(this, BoxLayout.Y_AXIS)
+        isOpaque = false
+        isVisible = false
+    }
+    private val attachButton = JButton("Attach", AllIcons.General.Add).apply {
+        toolTipText = "Attach a file, the selected code or an image. Typing @ also picks a file; Ctrl+V pastes screenshots."
     }
     private val actionButton = JButton("Send", AllIcons.Actions.Execute)
     private val retryButton = JButton("Retry", AllIcons.Actions.Refresh).apply {
@@ -167,6 +201,8 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
         add(composer(), BorderLayout.SOUTH)
 
         actionButton.addActionListener { if (busy) service.cancel() else send() }
+        attachButton.addActionListener { showAttachMenu() }
+        completion.onFile = { path -> attach(Attachment.File(path)) }
         retryButton.addActionListener { reconnect() }
         applyFont()
         planPanel.addMouseListener(object : java.awt.event.MouseAdapter() {
@@ -177,9 +213,11 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
         input.addKeyListener(object : KeyAdapter() {
             override fun keyPressed(e: KeyEvent) {
                 if (completion.handleKey(e)) return
-                if (e.keyCode == KeyEvent.VK_ENTER && !e.isShiftDown) {
+                if (e.keyCode == KeyEvent.VK_ENTER) {
                     e.consume()
-                    if (!busy) send()
+                    // Swing ignores Shift+Enter in a text area, so the line break is inserted by hand.
+                    if (e.isShiftDown || e.isControlDown || e.isAltDown || e.isMetaDown) input.replaceSelection("\n")
+                    else if (!busy) send()
                 }
             }
         })
@@ -202,7 +240,15 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
         // Colours are embedded in the transcript HTML, so a theme switch just needs a re-render.
         val bus = ApplicationManager.getApplication().messageBus.connect(parent)
         bus.subscribe(LafManagerListener.TOPIC, LafManagerListener { applyFont(); renderTranscript() })
-        bus.subscribe(KiroSettings.TOPIC, KiroSettings.Listener { applyFont(); renderTranscript() })
+        bus.subscribe(KiroSettings.TOPIC, KiroSettings.Listener { applyFont(); renderTranscript(); refreshAttachments() })
+        project.messageBus.connect(parent).subscribe(
+            FileEditorManagerListener.FILE_EDITOR_MANAGER,
+            object : FileEditorManagerListener {
+                override fun selectionChanged(event: FileEditorManagerEvent) = ApplicationManager.getApplication().invokeLater { updateOpenFile() }
+                override fun fileClosed(source: FileEditorManager, file: com.intellij.openapi.vfs.VirtualFile) = ApplicationManager.getApplication().invokeLater { updateOpenFile() }
+            },
+        )
+        updateOpenFile()
 
         renderTranscript()
         connect()
@@ -268,8 +314,13 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
         val box = JPanel(BorderLayout()).apply {
             // A softly rounded outline in the accent colour reads friendlier than a hard rectangle.
             border = JBUI.Borders.compound(RoundedLineBorder(ACCENT, JBUI.scale(14), 1), JBUI.Borders.empty(4, 6, 2, 6))
+            add(attachmentsPanel, BorderLayout.NORTH)
             add(JBScrollPane(input).apply { border = JBUI.Borders.empty() }, BorderLayout.CENTER)
-            add(JPanel(FlowLayout(FlowLayout.RIGHT, 4, 2)).apply { add(actionButton) }, BorderLayout.SOUTH)
+            add(JPanel(BorderLayout()).apply {
+                isOpaque = false
+                add(JPanel(FlowLayout(FlowLayout.LEFT, 4, 2)).apply { isOpaque = false; add(attachButton) }, BorderLayout.WEST)
+                add(JPanel(FlowLayout(FlowLayout.RIGHT, 4, 2)).apply { isOpaque = false; add(actionButton) }, BorderLayout.EAST)
+            }, BorderLayout.SOUTH)
         }
         return JPanel(BorderLayout()).apply {
             border = JBUI.Borders.empty(8)
@@ -300,6 +351,168 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
     fun appendToInput(text: String) {
         input.append(if (input.text.isEmpty() || input.text.endsWith("\n")) text else "\n$text")
         input.requestFocusInWindow()
+    }
+
+    /** A picture or files on the clipboard (a screenshot, files copied in Explorer) become chips. False if neither. */
+    private fun pasteNonText(): Boolean {
+        val copy = CopyPasteManager.getInstance()
+        if (copy.areDataFlavorsAvailable(java.awt.datatransfer.DataFlavor.imageFlavor)) {
+            val image = try {
+                copy.getContents<java.awt.Image>(java.awt.datatransfer.DataFlavor.imageFlavor)
+            } catch (_: Exception) {
+                null
+            }
+            val item = image?.let { ImageAttachments.fromImage(it) }
+            if (item != null) {
+                attach(item)
+                return true
+            }
+        }
+        if (copy.areDataFlavorsAvailable(java.awt.datatransfer.DataFlavor.javaFileListFlavor)) {
+            val list = try {
+                copy.getContents<List<java.io.File>>(java.awt.datatransfer.DataFlavor.javaFileListFlavor)
+            } catch (_: Exception) {
+                null
+            }
+            if (!list.isNullOrEmpty()) {
+                list.filter { it.isFile }.forEach { attachIoFile(it) }
+                return true
+            }
+        }
+        return false
+    }
+
+    /** An image file is attached as a picture, anything else by name (the agent reads it). */
+    private fun attachIoFile(file: java.io.File) {
+        if (ImageAttachments.isImageFile(file.name)) {
+            val image = ImageAttachments.fromFile(file)
+            if (image != null) return attach(image) else flash("Could not read ${file.name} as an image")
+        }
+        val vf = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(file)
+        attach(if (vf != null) AttachmentSources.file(project, vf) else Attachment.File(file.path.replace('\\', '/')))
+    }
+
+    /** Adds a chip above the input; the attachment travels with the next prompt. */
+    fun attach(item: Attachment) {
+        if (item in attachments) return
+        attachments.add(item)
+        refreshAttachments()
+        input.requestFocusInWindow()
+    }
+
+    /** Follows the selected editor tab; its file rides along with each prompt unless the user skipped it. */
+    private fun updateOpenFile() {
+        val vf = FileEditorManager.getInstance(project).selectedFiles.firstOrNull()?.takeIf { it.isInLocalFileSystem && !it.isDirectory }
+        val path = vf?.let { AttachmentSources.path(project, it) }
+        if (path == openFile) return
+        openFile = path
+        openFileSkipped = null
+        refreshAttachments()
+    }
+
+    private fun autoAttachment(): Attachment.File? =
+        openFile?.takeIf { KiroSettings.getInstance().state.autoAttachOpenFile && it != openFileSkipped }
+            ?.let { Attachment.File(it) }?.takeIf { it !in attachments }
+
+    private fun refreshAttachments() {
+        attachmentsPanel.removeAll()
+        autoAttachment()?.let { attachmentsPanel.add(chip(it, auto = true)) }
+        attachments.forEach { a -> attachmentsPanel.add(chip(a)) }
+        attachmentsPanel.isVisible = attachmentsPanel.componentCount > 0
+        attachmentsPanel.revalidate()
+        attachmentsPanel.repaint()
+        revalidate()
+    }
+
+    /** One removable row: icon, name (click to look at it), and an x. */
+    private fun chip(a: Attachment, auto: Boolean = false): JComponent {
+        val icon = when {
+            a is Attachment.File -> FileTypeManager.getInstance().getFileTypeByFileName(a.label).icon
+            a is Attachment.Image -> AllIcons.FileTypes.Image
+            a is Attachment.Snippet && a.source == null -> AllIcons.FileTypes.Text
+            else -> AllIcons.Actions.Copy
+        }
+        val label = JBLabel(if (auto) a.label + "  ·  open file" else a.label, icon, javax.swing.SwingConstants.LEFT).apply {
+            toolTipText = if (auto) "The file open in the editor is attached automatically. Click x to skip it." else if (a is Attachment.File) a.path else "Click to see the whole snippet"
+            cursor = java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR)
+            addMouseListener(object : java.awt.event.MouseAdapter() {
+                override fun mouseClicked(e: java.awt.event.MouseEvent) = previewAttachment(a)
+            })
+        }
+        val remove = JBLabel(AllIcons.Actions.Close).apply {
+            toolTipText = "Remove"
+            cursor = java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR)
+            addMouseListener(object : java.awt.event.MouseAdapter() {
+                override fun mouseClicked(e: java.awt.event.MouseEvent) {
+                    if (auto) openFileSkipped = openFile else attachments.remove(a)
+                    refreshAttachments()
+                }
+            })
+        }
+        val body = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
+            isOpaque = false
+            border = JBUI.Borders.compound(RoundedLineBorder(JBColor.border(), JBUI.scale(10), 1), JBUI.Borders.empty(1, 8))
+            add(label, BorderLayout.CENTER)
+            add(remove, BorderLayout.EAST)
+        }
+        return JPanel(FlowLayout(FlowLayout.LEFT, 0, JBUI.scale(2))).apply { isOpaque = false; add(body) }
+    }
+
+    private fun previewAttachment(a: Attachment) {
+        when (a) {
+            is Attachment.File -> openFileRef(MarkdownHtml.FileRef(a.path, null))
+            is Attachment.Image -> {
+                val icon = ImageAttachments.icon(a, JBUI.scale(640), JBUI.scale(480)) ?: return
+                val pane = JBScrollPane(JBLabel(icon)).apply { border = JBUI.Borders.empty() }
+                JBPopupFactory.getInstance().createComponentPopupBuilder(pane, null)
+                    .setTitle(a.label).setResizable(true).setMovable(true).setRequestFocus(false)
+                    .createPopup().showInCenterOf(this)
+            }
+            is Attachment.Snippet -> {
+                val area = JBTextArea(a.code).apply { isEditable = false; caretPosition = 0 }
+                val pane = JBScrollPane(area).apply { preferredSize = java.awt.Dimension(JBUI.scale(560), JBUI.scale(300)) }
+                JBPopupFactory.getInstance().createComponentPopupBuilder(pane, area)
+                    .setTitle(a.label).setResizable(true).setMovable(true).setRequestFocus(true)
+                    .createPopup().showInCenterOf(this)
+            }
+        }
+    }
+
+    private class AttachChoice(val label: String, val icon: javax.swing.Icon?, val run: () -> Unit)
+
+    /** What can be attached right now: the selection, the open file, other open tabs, or any file. */
+    private fun showAttachMenu() {
+        val fem = FileEditorManager.getInstance(project)
+        val editor = fem.selectedTextEditor
+        val current = fem.selectedFiles.firstOrNull()
+        val types = FileTypeManager.getInstance()
+        val entries = ArrayList<AttachChoice>()
+        if (editor != null) {
+            AttachmentSources.selection(project, editor, current)?.let { snippet ->
+                entries.add(AttachChoice("Selected code - ${snippet.label}", AllIcons.Actions.Copy) { attach(snippet) })
+            }
+        }
+        if (current != null) {
+            entries.add(AttachChoice("Current file - ${AttachmentSources.path(project, current)}", types.getFileTypeByFileName(current.name).icon) {
+                attach(AttachmentSources.file(project, current))
+            })
+        }
+        fem.openFiles.filter { it != current }.forEach { vf ->
+            entries.add(AttachChoice(AttachmentSources.path(project, vf), types.getFileTypeByFileName(vf.name).icon) {
+                attach(AttachmentSources.file(project, vf))
+            })
+        }
+        entries.add(AttachChoice("Choose a file...", AllIcons.Nodes.Folder) {
+            FileChooser.chooseFile(FileChooserDescriptorFactory.createSingleFileDescriptor(), project, null) { vf ->
+                attachIoFile(java.io.File(vf.path))
+            }
+        })
+        JBPopupFactory.getInstance().createPopupChooserBuilder(entries)
+            .setTitle("Attach")
+            .setRenderer(SimpleListCellRenderer.create<AttachChoice> { label, value, _ -> value?.let { label.text = it.label; label.icon = it.icon } })
+            .setItemChosenCallback { it.run() }
+            .createPopup()
+            .showUnderneathOf(attachButton)
     }
 
     /** Puts [text] at the start of the input (used to pick a skill from the Library tab) and focuses it. */
@@ -466,18 +679,26 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
 
     private fun send() {
         val text = input.text.trim()
-        if (text.isEmpty() || busy || opening || viewOnly) return
+        val sent = listOfNotNull(autoAttachment()) + attachments
+        if ((text.isEmpty() && attachments.isEmpty()) || busy || opening || viewOnly) return
         input.text = ""
-        blocks.add(ChatBlock.User(text))
+        attachments.clear()
+        refreshAttachments()
+        blocks.add(ChatBlock.User(text, sent))
         scheduleRender()
         setBusy(true)
         val gen = generation
-        service.prompt(text).whenComplete { reason, error ->
+        val pictures = sent.filterIsInstance<Attachment.Image>().map { PromptImage(it.mime, it.bytes) }
+        service.prompt(Attachments.compose(text, sent), pictures).whenComplete { reason, error ->
             ApplicationManager.getApplication().invokeLater {
                 if (gen != generation) return@invokeLater // the conversation was replaced meanwhile
                 if (error != null) notice("Error: ${error.cause?.message ?: error.message}")
                 else if (reason != "end_turn") notice("Stopped: $reason")
                 setBusy(false)
+                if (error != null || reason == "end_turn") {
+                    val reply = (blocks.lastOrNull { it is ChatBlock.Agent } as? ChatBlock.Agent)?.text?.toString()
+                    KiroNotifier.turnFinished(project, if (error != null) error.cause?.message ?: error.message else reply, error != null)
+                }
                 onSessionsChanged?.invoke() // the session now has a first prompt, and a newer timestamp
                 if (error == null) refreshPlanUsage(force = true) // the turn just spent credits
             }
@@ -740,8 +961,9 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
         val parts = href.removePrefix("copycode:").split(':')
         val block = parts.getOrNull(0)?.toIntOrNull()?.let { blocks.getOrNull(it) } as? ChatBlock.Agent ?: return
         val code = parts.getOrNull(1)?.toIntOrNull()?.let { MarkdownHtml.codeBlocks(block.text.toString()).getOrNull(it) } ?: return
-        CopyPasteManager.getInstance().setContents(StringSelection(code))
-        flash("Code copied")
+        val newSide = parts.getOrNull(2) == "new"
+        CopyPasteManager.getInstance().setContents(StringSelection(if (newSide) DiffText.newSide(code) else code))
+        flash(if (newSide) "New version copied" else "Code copied")
     }
 
     /** A short message in the status line that clears itself. */
@@ -782,6 +1004,9 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
             syntax = if (JBColor.isBright()) SyntaxColors.LIGHT else SyntaxColors.DARK,
             fontFamily = chatFontFamily(),
             fontSize = chatFontSize(),
+            diffAdd = hex(ColorUtil.mix(bg, JBColor(0x2E9E4F, 0x62B543), 0.20)),
+            diffDel = hex(ColorUtil.mix(bg, JBColor(0xD93A3A, 0xFF6B68), 0.20)),
+            diffHunk = hex(ColorUtil.mix(bg, ACCENT, 0.14)),
         )
     }
 

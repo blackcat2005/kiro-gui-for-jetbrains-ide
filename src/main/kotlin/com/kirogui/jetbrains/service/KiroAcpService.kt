@@ -12,6 +12,7 @@ import com.kirogui.jetbrains.acp.AcpClient
 import com.kirogui.jetbrains.acp.AcpEvent
 import com.kirogui.jetbrains.acp.PermissionHandler
 import com.kirogui.jetbrains.acp.PlanUsage
+import com.kirogui.jetbrains.acp.PromptImage
 import com.kirogui.jetbrains.acp.SessionInfo
 import com.kirogui.jetbrains.kiro.EditPreview
 import com.kirogui.jetbrains.settings.KiroLaunch
@@ -62,9 +63,9 @@ class KiroAcpService(private val project: Project) : Disposable {
     fun resume(sessionId: String, cwd: String): CompletableFuture<SessionInfo> = async { openSession(sessionId, cwd) }
 
     /** The future completes with the stop reason, or fails with the cause. */
-    fun prompt(text: String): CompletableFuture<String> = async {
+    fun prompt(text: String, images: List<PromptImage> = emptyList()): CompletableFuture<String> = async {
         val (c, session) = live()
-        c.prompt(session.sessionId, text).get()
+        c.prompt(session.sessionId, text, images).get()
     }
 
     fun setModel(modelId: String): CompletableFuture<Unit> = async {
@@ -168,7 +169,7 @@ class KiroAcpService(private val project: Project) : Disposable {
 
     private fun launch(cwd: String): AcpClient {
         val settings = KiroSettings.getInstance().state
-        val cmd = GeneralCommandLine(KiroLaunch.command(settings.kiroPath, settings.kiroArgs))
+        val cmd = GeneralCommandLine(KiroLaunch.command(settings.kiroPath, settings.kiroArgs, settings.kiroShell))
             .withWorkDirectory(cwd)
             .withCharset(Charsets.UTF_8)
             .withEnvironment(KiroLaunch.environment(settings.kiroEnv))

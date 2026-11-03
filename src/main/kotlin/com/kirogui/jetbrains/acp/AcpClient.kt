@@ -19,6 +19,22 @@ import java.io.OutputStream
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 
+/** A picture sent with a prompt (ACP `image` content block). */
+class PromptImage(val mimeType: String, val data: ByteArray)
+
+/** The `prompt` array: the text (when there is any, or when there is nothing else), then one block per image. */
+fun promptContent(text: String, images: List<PromptImage>): JsonArray = buildJsonArray {
+    if (text.isNotBlank() || images.isEmpty()) add(buildJsonObject {
+        put("type", "text")
+        put("text", text)
+    })
+    for (image in images) add(buildJsonObject {
+        put("type", "image")
+        put("mimeType", image.mimeType)
+        put("data", java.util.Base64.getEncoder().encodeToString(image.data))
+    })
+}
+
 /**
  * Typed Agent Client Protocol client (client side of `kiro-cli acp`).
  * Knows nothing about the IDE: streams, file access and permission UI are injected.
@@ -124,15 +140,10 @@ class AcpClient(
     }
 
     /** Completes with the stop reason (`end_turn`, `cancelled`, ...) when the turn finishes. */
-    fun prompt(sessionId: String, text: String): CompletableFuture<String> =
+    fun prompt(sessionId: String, text: String, images: List<PromptImage> = emptyList()): CompletableFuture<String> =
         connection.request("session/prompt", buildJsonObject {
             put("sessionId", sessionId)
-            put("prompt", buildJsonArray {
-                add(buildJsonObject {
-                    put("type", "text")
-                    put("text", text)
-                })
-            })
+            put("prompt", promptContent(text, images))
         }).thenApply { it.jsonObject["stopReason"]?.jsonPrimitive?.contentOrNull ?: "unknown" }
 
     fun cancel(sessionId: String) {

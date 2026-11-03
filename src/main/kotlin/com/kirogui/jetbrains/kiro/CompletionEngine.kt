@@ -5,7 +5,7 @@ import com.kirogui.jetbrains.acp.SlashCommand
 enum class SuggestionKind { COMMAND, SUBCOMMAND, SKILL, FILE }
 
 /** [insert] replaces the typed token; it already carries any trailing space. */
-data class Suggestion(val label: String, val detail: String, val insert: String, val kind: SuggestionKind)
+data class Suggestion(val label: String, val detail: String, val insert: String, val kind: SuggestionKind, val path: String? = null)
 
 /** The text range [start, end) to replace, and what to offer for it. */
 data class Completion(val start: Int, val end: Int, val suggestions: List<Suggestion>)
@@ -74,7 +74,7 @@ class CompletionEngine(
         val fileHits = FileRanker.rank(files(), query, limit).map { f ->
             val name = f.path.substringAfterLast('/')
             val ref = if (f.path.any { it.isWhitespace() }) "@`${f.path}` " else "@${f.path} "
-            Suggestion(name, f.path.substringBeforeLast('/', ""), ref, SuggestionKind.FILE)
+            Suggestion(name, f.path.substringBeforeLast('/', ""), ref, SuggestionKind.FILE, f.path)
         }
         val items = (skillHits + fileHits).take(limit)
         return items.takeIf { it.isNotEmpty() }?.let { Completion(start, tokenEnd(text, caret), it) }

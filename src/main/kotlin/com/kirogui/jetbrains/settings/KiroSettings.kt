@@ -22,6 +22,16 @@ class KiroSettings : PersistentStateComponent<KiroSettings.State> {
         /** Extra environment variables for the process, one `KEY=VALUE` per line. */
         var kiroEnv: String = ""
 
+        /** Shell template that kiro-cli is started through (`bash -l -c {cmd}`); blank starts it directly. */
+        var kiroShell: String = ""
+
+        /** The file in the selected editor tab is attached to every prompt (a chip you can dismiss). */
+        var autoAttachOpenFile: Boolean = true
+
+        /** Balloon when a reply finishes; by default only while you are looking elsewhere. */
+        var notifyOnDone: Boolean = true
+        var notifyOnlyInBackground: Boolean = true
+
         /** Chat font; blank family / zero size mean "follow the IDE font" (size: one point larger). */
         var chatFontFamily: String = ""
         var chatFontSize: Int = 0

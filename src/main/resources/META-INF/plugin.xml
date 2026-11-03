@@ -14,6 +14,7 @@
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow id="Kiro" anchor="right" icon="/icons/kiro.svg"
                     factoryClass="com.kirogui.jetbrains.ui.KiroToolWindowFactory"/>
+        <notificationGroup id="Kiro" displayType="BALLOON" isLogByDefault="true"/>
         <applicationConfigurable parentId="tools" id="com.kirogui.jetbrains.settings"
                                  displayName="Kiro"
                                  instance="com.kirogui.jetbrains.settings.KiroConfigurable"/>

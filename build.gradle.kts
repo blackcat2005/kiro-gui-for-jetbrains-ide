@@ -40,6 +40,25 @@ intellijPlatform {
         ideaVersion {
             sinceBuild = "251"
         }
+        changeNotes = """
+            <ul>
+                <li>Chat font family and size settings; livelier look with starter prompts on an empty chat</li>
+                <li>kiro-cli arguments and environment variables in Settings | Tools | Kiro</li>
+                <li>Retry and Restart buttons reconnect to the open conversation when kiro-cli fails</li>
+                <li>Long descriptions in the / and @ popups are shortened instead of overflowing</li>
+                <li>New plugin, session and tool window icons; requires IntelliJ 2025.1 or newer</li>
+            </ul>
+        """.trimIndent()
+    }
+
+    // Marketplace upload: set PUBLISH_TOKEN (and, if you sign, CERTIFICATE_CHAIN / PRIVATE_KEY / PRIVATE_KEY_PASSWORD).
+    signing {
+        certificateChain = providers.environmentVariable("CERTIFICATE_CHAIN")
+        privateKey = providers.environmentVariable("PRIVATE_KEY")
+        password = providers.environmentVariable("PRIVATE_KEY_PASSWORD")
+    }
+    publishing {
+        token = providers.environmentVariable("PUBLISH_TOKEN")
     }
 }
 

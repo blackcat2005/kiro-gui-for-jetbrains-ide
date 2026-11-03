@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.kirogui.jetbrains</id>
     <name>Kiro GUI (ACP)</name>
-    <vendor>kirogui</vendor>
+    <vendor url="https://github.com/blackcat2005/kiro-gui-for-jetbrains-ide">blackcat20052003</vendor>
     <description><![CDATA[
         Chat with <a href="https://kiro.dev">Kiro</a> inside JetBrains IDEs. Talks to
         <code>kiro-cli acp</code> over the Agent Client Protocol (JSON-RPC over stdio):

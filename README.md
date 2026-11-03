@@ -51,3 +51,13 @@ Download `kiro-gui-for-jetbrains-ide-<version>.zip` from the Releases page, then
 - Folders and display names for sessions: `~/.kiro/kirogui-sessions.json` (the plugin's own file; Kiro's
   session files are never moved). Renaming also writes Kiro's own `title` so the CLI shows the same name.
 - Skills, steering, specs and hooks are plain files under `.kiro/` in the project and in `~/.kiro`.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
+
+## Publishing to JetBrains Marketplace
+
+1. `./gradlew buildPlugin` and upload `build/distributions/*.zip` by hand for the first release, or
+2. set `PUBLISH_TOKEN` (a token from your JetBrains Marketplace profile) and run `./gradlew publishPlugin`.
+   Plugin signing is optional; set `CERTIFICATE_CHAIN`, `PRIVATE_KEY` and `PRIVATE_KEY_PASSWORD` to use `signPlugin`.

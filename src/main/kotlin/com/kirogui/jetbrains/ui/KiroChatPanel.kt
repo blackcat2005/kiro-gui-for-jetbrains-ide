@@ -213,7 +213,7 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
     private fun header(): JPanel {
         val actions = DefaultActionGroup().apply {
             // Far left: the session list toggle, then the other icons.
-            add(object : ToggleAction("Session list", "Show or hide the session list", AllIcons.Actions.ShowAsTree), com.intellij.openapi.project.DumbAware {
+            add(object : ToggleAction("Session list", "Show or hide the session list", KiroIcons.Session), com.intellij.openapi.project.DumbAware {
                 override fun isSelected(e: AnActionEvent) = sidebar?.shown == true
                 override fun setSelected(e: AnActionEvent, state: Boolean) {
                     sidebar?.shown = state

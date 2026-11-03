@@ -24,7 +24,7 @@ import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.TreeCellRenderer
 
 enum class SectionKind(val title: String, val icon: Icon) {
-    SESSIONS("Sessions", AllIcons.Toolwindows.ToolWindowMessages),
+    SESSIONS("Sessions", KiroIcons.Session),
     SKILLS("Skills", AllIcons.Nodes.Plugin),
     STEERING("Steering", AllIcons.Actions.Edit),
     SPECS("Specs", AllIcons.Nodes.Package),
@@ -148,7 +148,7 @@ class LibraryTreeRenderer(
             }
             is SessionNode.Item -> {
                 val s = n.session
-                iconLabel.icon = if (s.parentId != null) AllIcons.Vcs.Branch else AllIcons.Toolwindows.ToolWindowMessages
+                iconLabel.icon = if (s.parentId != null) KiroIcons.SessionChild else KiroIcons.Session
                 if (s.id == current()) {
                     title.append("● ", badge)
                     title.append(truncate(n.name, 80), bold)

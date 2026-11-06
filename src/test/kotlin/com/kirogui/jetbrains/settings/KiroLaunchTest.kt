@@ -54,6 +54,16 @@ class KiroLaunchTest {
     }
 
     @Test
+    fun `an engine is appended unless blank or already given`() {
+        assertEquals("", KiroLaunch.withEngine("", ""))
+        assertEquals("--agent x", KiroLaunch.withEngine("--agent x", "  "))
+        assertEquals("--agent-engine v2", KiroLaunch.withEngine("", "v2"))
+        assertEquals("--agent x --agent-engine v3", KiroLaunch.withEngine("--agent x", "v3"))
+        assertEquals("--agent-engine v1", KiroLaunch.withEngine("--agent-engine v1", "v3"), "the user's own argument wins")
+        assertEquals(listOf("kiro-cli", "acp", "--agent-engine", "v2"), KiroLaunch.command("kiro-cli", KiroLaunch.withEngine("", "v2")))
+    }
+
+    @Test
     fun `blank shell runs directly`() {
         assertEquals(listOf("kiro-cli", "acp"), KiroLaunch.command("kiro-cli", "", "  "))
     }

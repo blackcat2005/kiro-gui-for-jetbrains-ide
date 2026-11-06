@@ -23,7 +23,9 @@ import com.intellij.ui.components.JBTextField
 import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.ui.JBUI
 import com.kirogui.jetbrains.kiro.Folder
+import com.kirogui.jetbrains.kiro.AgentInfo
 import com.kirogui.jetbrains.kiro.HookInfo
+import com.kirogui.jetbrains.kiro.McpInfo
 import com.kirogui.jetbrains.kiro.KiroResources
 import com.kirogui.jetbrains.kiro.KiroSession
 import com.kirogui.jetbrains.kiro.ResourceItem
@@ -69,6 +71,8 @@ class KiroLibraryPanel(
     private val onNewChat: () -> Unit = {},
     /** Id of the session open in the chat, so it can be highlighted and kept visible. */
     private val currentSessionId: () -> String? = { null },
+    /** Name of the agent the chat is using, so it can be marked in the Agents list. */
+    private val currentAgent: () -> String? = { null },
 ) : JPanel(BorderLayout()) {
 
     private class Snapshot(
@@ -77,6 +81,8 @@ class KiroLibraryPanel(
         val steering: List<ResourceItem>,
         val specs: List<SpecInfo>,
         val hooks: List<HookInfo>,
+        val agents: List<AgentInfo>,
+        val mcp: List<McpInfo>,
     )
 
     private val kiroHome: Path = Path.of(System.getProperty("user.home"), ".kiro")
@@ -210,8 +216,8 @@ class KiroLibraryPanel(
             val snap = try {
                 organizer.load()
                 val r = resources()
-                if (compact) Snapshot(scanner.scan(), emptyList(), emptyList(), emptyList(), emptyList())
-                else Snapshot(scanner.scan(), r.skills(), r.steering(), r.specs(), r.hooks())
+                if (compact) Snapshot(scanner.scan(), emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), emptyList())
+                else Snapshot(scanner.scan(), r.skills(), r.steering(), r.specs(), r.hooks(), r.agents(), r.mcpServers())
             } catch (e: Exception) {
                 ApplicationManager.getApplication().invokeLater { summary.text = "Could not read Kiro data: ${e.message}" }
                 return@executeOnPooledThread
@@ -234,6 +240,9 @@ class KiroLibraryPanel(
         val steering = snap.steering.filter { matches(it.name, it.summary) }
         val specs = snap.specs.filter { matches(it.name) }
         val hooks = snap.hooks.filter { matches(it.name, it.trigger) }
+        val agents = snap.agents.filter { matches(it.name, it.description) }
+        val mcp = snap.mcp.filter { matches(it.name, it.summary) }
+        val activeAgent = currentAgent()
 
         val previous = expandedKeys ?: currentExpandedKeys()
         val firstBuild = expandedKeys == null
@@ -247,6 +256,8 @@ class KiroLibraryPanel(
         if (!compact) section(SectionKind.STEERING, steering.size, steering.map { DefaultMutableTreeNode(LibNode.Steering(it)) })
         if (!compact) section(SectionKind.SPECS, specs.size, specs.map(::specTreeNode))
         if (!compact) section(SectionKind.HOOKS, hooks.size, hooks.map { DefaultMutableTreeNode(LibNode.Hook(it)) })
+        if (!compact) section(SectionKind.AGENTS, agents.size, agents.map { DefaultMutableTreeNode(LibNode.Agent(it, it.name == activeAgent)) })
+        if (!compact) section(SectionKind.MCP, mcp.size, mcp.map { DefaultMutableTreeNode(LibNode.Mcp(it)) })
 
         tree.model = DefaultTreeModel(root)
         forEachNode(root) { n ->
@@ -264,7 +275,8 @@ class KiroLibraryPanel(
             summary.text = "${SessionTree.countItems(sessionNodes)} sessions"
         } else {
             summary.text = "${SessionTree.countItems(sessionNodes)} of ${snap.sessions.size} sessions  ·  " +
-                "${skills.size} skills  ·  ${steering.size} steering  ·  ${specs.size} specs  ·  ${hooks.size} hooks"
+                "${skills.size} skills  ·  ${steering.size} steering  ·  ${specs.size} specs  ·  ${hooks.size} hooks  ·  " +
+                "${agents.size} agents  ·  ${mcp.count { it.enabled }}/${mcp.size} MCP on"
         }
     }
 
@@ -423,6 +435,8 @@ class KiroLibraryPanel(
             is LibNode.Steering -> open(n.item.path)
             is LibNode.SpecFile -> open(n.path)
             is LibNode.Hook -> open(n.hook.file)
+            is LibNode.Agent -> open(n.agent.file)
+            is LibNode.Mcp -> open(n.server.file)
             is LibNode.Spec -> (n.spec.tasks ?: n.spec.requirements ?: n.spec.design)?.let(::open)
             else -> tree.selectionPath?.let { if (tree.isExpanded(it)) tree.collapsePath(it) else tree.expandPath(it) }
         }
@@ -468,6 +482,11 @@ class KiroLibraryPanel(
                 add(if (node.hook.enabled) "Disable" else "Enable") { guarded { resources().setHookEnabled(node.hook, !node.hook.enabled) } }
                 add("Delete") { delete(node) }
             }
+            is LibNode.Agent -> {
+                add("Open JSON") { open(node.agent.file) }
+                add("Delete") { delete(node) }
+            }
+            is LibNode.Mcp -> add("Open ${node.server.file.fileName} (${node.server.scope.label})") { open(node.server.file) }
             null -> Unit
         }
         if (group.childrenCount == 0) return
@@ -480,6 +499,8 @@ class KiroLibraryPanel(
         SectionKind.STEERING -> "New steering file…"
         SectionKind.SPECS -> "New spec…"
         SectionKind.HOOKS -> "New hook…"
+        SectionKind.AGENTS -> "New agent…"
+        SectionKind.MCP -> "Open mcp.json…"
     }
 
     private fun showNewMenu() {
@@ -526,6 +547,16 @@ class KiroLibraryPanel(
                 val command = ask("Shell command to run:", "New hook") ?: return
                 val scope = askScope() ?: return
                 open(resources().createHook(name, trigger, matcher, command, scope))
+            }
+            SectionKind.AGENTS -> {
+                val name = ask("Agent name (lowercase, digits, hyphens):", "New agent") ?: return
+                val desc = ask("What is this agent for? (optional)", "New agent") ?: return
+                val scope = askScope() ?: return
+                open(resources().createAgent(name, desc, scope))
+            }
+            SectionKind.MCP -> {
+                val scope = askScope() ?: return
+                open(resources().ensureMcpFile(scope))
             }
         }
     }
@@ -598,6 +629,7 @@ class KiroLibraryPanel(
             is LibNode.Steering -> "steering file \"${node.item.name}\"" to { resources().deleteSteering(node.item) }
             is LibNode.Spec -> "spec \"${node.spec.name}\" (its whole folder)" to { resources().deleteSpec(node.spec) }
             is LibNode.Hook -> "hook \"${node.hook.name}\"" to { resources().deleteHook(node.hook) }
+            is LibNode.Agent -> "agent \"${node.agent.name}\" (${node.agent.file.fileName})" to { resources().deleteAgent(node.agent) }
             else -> null
         } ?: return
         if (Messages.showYesNoDialog(project, "Delete ${what.first}?", "Kiro", Messages.getWarningIcon()) == Messages.YES) {

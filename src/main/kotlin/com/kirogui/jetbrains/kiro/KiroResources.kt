@@ -47,6 +47,32 @@ data class HookInfo(
     val description: String?,
 )
 
+/** An agent config (`.kiro/agents/<name>.json`). Only what the Library shows; the prompt is left in the file. */
+data class AgentInfo(
+    val name: String,
+    val scope: Scope,
+    val file: Path,
+    val description: String,
+    val model: String?,
+    /** Servers the agent defines itself. */
+    val ownMcp: List<String>,
+    /** Whether the agent also loads the servers from `mcp.json`. Kiro's default is yes. */
+    val includeMcpJson: Boolean,
+    val toolCount: Int,
+)
+
+/** One entry of an `mcp.json`. [enabled] is false when the entry is switched off or a workspace entry replaces it. */
+data class McpInfo(
+    val name: String,
+    val scope: Scope,
+    val file: Path,
+    val transport: String,
+    val summary: String,
+    val enabled: Boolean,
+    /** "disabled" or "replaced by the workspace entry"; null when enabled. */
+    val offReason: String?,
+)
+
 /**
  * Reads and edits what Kiro keeps under `.kiro/`: skills, steering, specs and hooks.
  * Layouts follow the Kiro docs (kiro.dev/docs/skills, /steering, /specs, /hooks).
@@ -117,7 +143,75 @@ class KiroResources(private val workspace: Path?, private val home: Path) {
         }
     }
 
+    fun agents(): List<AgentInfo> = scopes.flatMap { scope ->
+        // Only *.json: backups such as `x.json.bak` and lock files sit in the same folder.
+        children(root(scope)?.resolve("agents")).filter { it.extension == "json" }.mapNotNull { file ->
+            val o = try {
+                Json.parseToJsonElement(file.readSafe()).jsonObject
+            } catch (_: Exception) {
+                return@mapNotNull null
+            }
+            AgentInfo(
+                name = o.str("name") ?: file.nameWithoutExtension,
+                scope = scope, file = file,
+                description = o.str("description").orEmpty(),
+                model = o.str("model"),
+                ownMcp = (o["mcpServers"] as? JsonObject)?.keys?.toList().orEmpty(),
+                includeMcpJson = o["includeMcpJson"]?.jsonPrimitive?.booleanOrNull ?: true,
+                toolCount = (o["tools"] as? JsonArray)?.size ?: 0,
+            )
+        }
+    }
+
+    /** Workspace entries first. A global entry with the same name is shadowed by the workspace one. */
+    fun mcpServers(): List<McpInfo> {
+        val workspaceNames = mutableSetOf<String>()
+        return scopes.flatMap { scope ->
+            val file = root(scope)?.resolve("settings/mcp.json") ?: return@flatMap emptyList()
+            val servers = try {
+                Json.parseToJsonElement(file.readSafe()).jsonObject["mcpServers"] as? JsonObject
+            } catch (_: Exception) {
+                null
+            } ?: return@flatMap emptyList()
+            servers.mapNotNull { (name, value) ->
+                val o = value as? JsonObject ?: return@mapNotNull null
+                if (scope == Scope.WORKSPACE) workspaceNames += name
+                val off = o["disabled"]?.jsonPrimitive?.booleanOrNull == true
+                val shadowed = scope == Scope.GLOBAL && name in workspaceNames
+                val url = o.str("url")
+                McpInfo(
+                    name = name, scope = scope, file = file,
+                    transport = if (url != null) "http" else o.str("type") ?: "stdio",
+                    summary = url ?: listOfNotNull(
+                        o.str("command"),
+                        (o["args"] as? JsonArray)?.joinToString(" ") { (it as? JsonPrimitive)?.contentOrNull ?: "" },
+                    ).joinToString(" ").trim(),
+                    enabled = !off && !shadowed,
+                    offReason = if (off) "disabled" else if (shadowed) "replaced by the workspace entry" else null,
+                )
+            }
+        }
+    }
+
     // ---------- creating ----------
+
+    fun createAgent(name: String, description: String, scope: Scope): Path {
+        require(SKILL_NAME.matches(name)) { "Agent names use lowercase letters, digits and hyphens only." }
+        val doc = buildJsonObject {
+            put("name", name)
+            if (description.isNotBlank()) put("description", description.trim())
+            put("prompt", "You are $name. Describe how this agent should behave.")
+            put("tools", JsonArray(listOf(JsonPrimitive("*"))))
+        }
+        return writeNew(requireRoot(scope).resolve("agents/$name.json"), json.encodeToString(JsonObject.serializer(), doc) + "\n")
+    }
+
+    /** The `mcp.json` of [scope], created with an empty server list when it doesn't exist yet. */
+    fun ensureMcpFile(scope: Scope): Path {
+        val file = requireRoot(scope).resolve("settings/mcp.json")
+        if (!file.exists()) writeNew(file, "{\n  \"mcpServers\": {}\n}\n")
+        return file
+    }
 
     fun createSkill(name: String, description: String, scope: Scope): Path {
         require(SKILL_NAME.matches(name)) { "Skill names use lowercase letters, digits and hyphens only (max 64 characters)." }
@@ -193,6 +287,7 @@ class KiroResources(private val workspace: Path?, private val home: Path) {
     fun deleteSkill(item: ResourceItem) = deleteRecursively(item.path.parent)
     fun deleteSteering(item: ResourceItem) = Files.delete(item.path)
     fun deleteSpec(spec: SpecInfo) = deleteRecursively(spec.dir)
+    fun deleteAgent(agent: AgentInfo) = Files.delete(agent.file)
 
     private fun rewriteHooks(hook: HookInfo, transform: (JsonObject) -> JsonObject) {
         val root = Json.parseToJsonElement(hook.file.readText()).jsonObject

@@ -4,7 +4,7 @@ A JetBrains IDE plugin that gives [Kiro](https://kiro.dev) a native chat GUI. It
 `kiro-cli acp` over the [Agent Client Protocol](https://agentclientprotocol.com) (JSON-RPC over stdio),
 so it needs no embedded browser and no local HTTP server.
 
-Requires IDE build 251+ (2025.1 and newer) and an installed, signed-in `kiro-cli`.
+Requires IDE build 251+ (2025.1 and newer) and an installed, signed-in `kiro-cli` (2.x or 3.x).
 
 ## Features
 
@@ -26,12 +26,51 @@ Requires IDE build 251+ (2025.1 and newer) and an installed, signed-in `kiro-cli
   A clicked session's history appears at once (read from Kiro's files) while Kiro reloads it in the background;
   sessions Kiro can't reload, such as tangents in the v3 store, open read-only. New chats and reopened sessions
   reuse the running `kiro-cli` process (about a second instead of two to three).
+- **Attachments**: the Attach button, `@` and Ctrl+V add files, selected code and images (screenshots) as chips above
+  the input; the open editor file is attached automatically (turn it off in Settings). Long pastes become a chip too.
+  Shift+Enter inserts a newline. Diffs in answers are coloured rows with *Copy diff* / *Copy new*.
+- **Notification** when Kiro finishes a reply (balloon and system notification, by default only while the IDE is in
+  the background).
 - **Library** tab: one tree for everything Kiro keeps.
   - *Sessions*: your own nestable folders, unfiled sessions grouped by date, tangents and subagent sessions
     under the session they branched from; rename and move via right-click. Sessions in Kiro's legacy store can
     be reopened with their history; those in the newer v3 store can be organised and renamed but not reopened
     (the `kiro-cli acp` server can't load them).
   - *Skills, Steering, Specs (with task progress), Hooks* under `.kiro/`: create, open, delete, enable/disable.
+  - *Agents* (`.kiro/agents/*.json`, workspace and global): model, tool count and MCP servers per agent; the agent
+    the chat is using is marked **in use**.
+  - *MCP servers* (`settings/mcp.json`, workspace and global): each shows **on** or **off**. Off means the entry has
+    `"disabled": true`, or a workspace entry with the same name replaces it. The list is read from the files, so it
+    shows what is configured, not whether the server connected; a server that fails to connect is reported in the chat.
+
+## Settings (Settings -> Tools -> Kiro)
+
+- **kiro-cli path, arguments, environment**: arguments go after `acp` (for example `--agent my-agent`); one
+  `KEY=VALUE` per line for the environment.
+- **Run through**: start kiro-cli through PowerShell, cmd, bash/Git Bash, WSL or a custom shell template with `{cmd}`.
+  This only changes the shell that starts kiro-cli, not the shell kiro-cli uses for the commands its agent runs.
+- **Agent engine**: kiro-cli 3.x has two engines (`--agent-engine v2` / `v3`). Leave it on the default unless
+  something misbehaves.
+- **Start timeout** (default 120 s): how long to wait for kiro-cli to start and to open a session. Raise it where
+  security software slows kiro-cli down.
+- Chat font and size, attaching the open file, and notifications.
+
+## kiro-cli 3.x
+
+The plugin understands both generations of the protocol and shows the same thing for each: the model list and model
+switching, context %, credits per turn, slash commands, and warnings such as an MCP server that failed to connect.
+kiro-cli 3.1 chooses its engine from the client name; with this plugin it is the v3 engine unless you pick v2 in
+Settings. The plan-credits bar (your account's credits for the billing cycle) is not available on the v3 engine yet and
+stays hidden there. Notes on kiro-cli's environment variables are in [docs/kiro-cli-v3-env.md](docs/kiro-cli-v3-env.md).
+
+## Troubleshooting
+
+- **"Cannot start kiro-cli" or a timeout**: open *Help -> Show Log in Explorer* and look for the lines `Starting kiro-cli`,
+  `kiro-cli initialized in ... ms` and `Session ... ready in ... ms` in `idea.log`; they show where it stalled. On a
+  managed machine, security software may be slowing or blocking `kiro-cli`; raise the start timeout and ask your IT
+  team to allow it.
+- **Not signed in**: run `kiro-cli login` in a terminal, then press Retry.
+- A "Restart" or "Retry" also stops the processes kiro-cli started (its engine and MCP servers).
 
 ## Install
 

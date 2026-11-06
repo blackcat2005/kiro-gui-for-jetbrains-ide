@@ -72,6 +72,10 @@ class AcpClient(
     @Volatile
     var activeSession: String? = null
 
+    /** How long the handshake and opening or reloading a session may take. Set from the settings page. */
+    @Volatile
+    var startTimeoutSeconds: Long = 120
+
     private fun foreign(params: JsonObject): Boolean {
         val active = activeSession ?: return false
         val sid = params["sessionId"]?.jsonPrimitive?.contentOrNull ?: return false
@@ -91,15 +95,15 @@ class AcpClient(
         put("clientInfo", buildJsonObject {
             put("name", "kiro-gui-for-jetbrains")
             put("title", "Kiro GUI for JetBrains")
-            put("version", "0.1.0")
+            put("version", "0.1.3")
         })
-    }).get(30, TimeUnit.SECONDS)
+    }).get(startTimeoutSeconds, TimeUnit.SECONDS)
 
     fun newSession(cwd: String): SessionInfo {
         val result = connection.request("session/new", buildJsonObject {
             put("cwd", cwd)
             put("mcpServers", JsonArray(emptyList()))
-        }).get(30, TimeUnit.SECONDS).jsonObject
+        }).get(startTimeoutSeconds, TimeUnit.SECONDS).jsonObject
         return parseSession(result, result.str("sessionId") ?: error("session/new returned no sessionId"))
     }
 
@@ -109,21 +113,11 @@ class AcpClient(
             put("sessionId", sessionId)
             put("cwd", cwd)
             put("mcpServers", JsonArray(emptyList()))
-        }).get(60, TimeUnit.SECONDS)
+        }).get(startTimeoutSeconds, TimeUnit.SECONDS)
         return parseSession(result as? JsonObject ?: JsonObject(emptyMap()), sessionId)
     }
 
-    private fun parseSession(result: JsonObject, sessionId: String): SessionInfo {
-        val modes = result["modes"] as? JsonObject
-        val models = result["models"] as? JsonObject
-        return SessionInfo(
-            sessionId = sessionId,
-            modes = modes.choices("availableModes", "id"),
-            currentModeId = modes?.str("currentModeId"),
-            models = models.choices("availableModels", "modelId"),
-            currentModelId = models?.str("currentModelId"),
-        )
-    }
+    private fun parseSession(result: JsonObject, sessionId: String): SessionInfo = AcpParse.session(result, sessionId)
 
     fun setMode(sessionId: String, modeId: String) {
         connection.request("session/set_mode", buildJsonObject {
@@ -132,11 +126,34 @@ class AcpClient(
         }).get(15, TimeUnit.SECONDS)
     }
 
-    fun setModel(sessionId: String, modelId: String) {
-        connection.request("session/set_model", buildJsonObject {
-            put("sessionId", sessionId)
-            put("modelId", modelId)
-        }).get(15, TimeUnit.SECONDS)
+    /**
+     * The v2 engine has `session/set_model`; the v3 engine changes it through the `model` config option instead.
+     * [viaConfigOptions] says which to try first, and the other is the fallback if that one is refused.
+     */
+    fun setModel(sessionId: String, modelId: String, viaConfigOptions: Boolean = false) {
+        val legacy = {
+            connection.request("session/set_model", buildJsonObject {
+                put("sessionId", sessionId)
+                put("modelId", modelId)
+            }).get(15, TimeUnit.SECONDS)
+        }
+        val configOption = {
+            connection.request("session/set_config_option", buildJsonObject {
+                put("sessionId", sessionId)
+                put("configId", "model")
+                put("value", modelId)
+            }).get(15, TimeUnit.SECONDS)
+        }
+        val (first, second) = if (viaConfigOptions) configOption to legacy else legacy to configOption
+        try {
+            first()
+        } catch (e: Exception) {
+            try {
+                second()
+            } catch (_: Exception) {
+                throw e
+            }
+        }
     }
 
     /** Completes with the stop reason (`end_turn`, `cancelled`, ...) when the turn finishes. */
@@ -224,6 +241,8 @@ class AcpClient(
                 update.str("toolCallId") ?: "", update.str("title"), update.str("status"),
             )
             "plan" -> AcpEvent.Plan(update["entries"]?.jsonArray?.mapNotNull { it.jsonObject.str("content") } ?: emptyList())
+            "session_info_update" -> AcpParse.sessionInfo(update) ?: AcpEvent.Other(type)
+            "available_commands_update" -> AcpEvent.Commands(AcpParse.commands(update))
             else -> AcpEvent.Other(type ?: "unknown")
         }
         listener(event)

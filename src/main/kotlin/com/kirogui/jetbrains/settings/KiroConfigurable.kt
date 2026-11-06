@@ -23,6 +23,12 @@ class KiroConfigurable : Configurable {
     private val envArea = JBTextArea(4, 40).apply { emptyText.text = "KEY=VALUE, one per line" }
     private val shellBox = ComboBox<String>()
     private val shellField = JBTextField().apply { emptyText.text = "e.g. bash -l -c {cmd}" }
+    private val timeoutSpinner = JSpinner(
+        SpinnerNumberModel(
+            KiroSettings.DEFAULT_START_TIMEOUT, KiroSettings.MIN_START_TIMEOUT, KiroSettings.MAX_START_TIMEOUT, 10,
+        ),
+    )
+    private val engineBox = ComboBox(arrayOf(ENGINE_DEFAULT, "v2", "v3"))
     private val fontBox = ComboBox<String>()
     private val sizeSpinner = JSpinner(SpinnerNumberModel(0, 0, 32, 1))
     private val autoFileBox = JBCheckBox("Attach the open editor file to each prompt")
@@ -59,6 +65,10 @@ class KiroConfigurable : Configurable {
             .addLabeledComponent(JBLabel("Shell command:"), shellField)
             .addComponent(hint("kiro-cli runs as a plain child process of the IDE, not in the Terminal tool window. Pick a shell to start it from so it sees that shell's PATH and profile. {cmd} stands for the kiro-cli command line."), 0)
             .addLabeledComponent(JBLabel("Environment:"), JBScrollPane(envArea))
+            .addLabeledComponent(JBLabel("Agent engine:"), engineBox)
+            .addComponent(hint("kiro-cli 3.x has two engines. v3 is the newer one the plugin gets by default; pick v2 to keep the older behaviour. Leave on default unless something misbehaves."), 0)
+            .addLabeledComponent(JBLabel("Start timeout (seconds):"), timeoutSpinner)
+            .addComponent(hint("How long to wait for kiro-cli to start and to open a session before giving up. Raise it on machines where security software slows kiro-cli down."), 0)
             .addComponent(hint("Launch settings take effect the next time kiro-cli starts (Restart in the chat header)."))
             .addSeparator(12)
             .addLabeledComponent(JBLabel("Chat font:"), fontBox)
@@ -75,6 +85,8 @@ class KiroConfigurable : Configurable {
 
     private fun state() = KiroSettings.getInstance().state
 
+    private fun chosenEngine(): String = (engineBox.selectedItem as? String)?.takeIf { it != ENGINE_DEFAULT } ?: ""
+
     private fun chosenFamily(): String = (fontBox.selectedItem as? String)?.takeIf { it != DEFAULT_FONT } ?: ""
 
     private fun shellText(): String = if (shellBox.selectedItem == KiroLaunch.DIRECT) "" else shellField.text.trim()
@@ -83,6 +95,7 @@ class KiroConfigurable : Configurable {
         val s = state()
         return pathField.text.trim() != s.kiroPath || argsField.text.trim() != s.kiroArgs ||
             envArea.text.trim() != s.kiroEnv.trim() || shellText() != s.kiroShell || chosenFamily() != s.chatFontFamily ||
+            (timeoutSpinner.value as Int) != s.startTimeoutSeconds || chosenEngine() != s.agentEngine ||
             (sizeSpinner.value as Int) != s.chatFontSize ||
             autoFileBox.isSelected != s.autoAttachOpenFile || notifyBox.isSelected != s.notifyOnDone || backgroundBox.isSelected != s.notifyOnlyInBackground
     }
@@ -93,6 +106,8 @@ class KiroConfigurable : Configurable {
         s.kiroArgs = argsField.text.trim()
         s.kiroEnv = envArea.text.trim()
         s.kiroShell = shellText()
+        s.startTimeoutSeconds = timeoutSpinner.value as Int
+        s.agentEngine = chosenEngine()
         s.chatFontFamily = chosenFamily()
         s.chatFontSize = sizeSpinner.value as Int
         s.autoAttachOpenFile = autoFileBox.isSelected
@@ -106,6 +121,8 @@ class KiroConfigurable : Configurable {
         pathField.text = s.kiroPath
         argsField.text = s.kiroArgs
         envArea.text = s.kiroEnv
+        engineBox.selectedItem = s.agentEngine.ifBlank { ENGINE_DEFAULT }
+        timeoutSpinner.value = s.startTimeoutSeconds.coerceIn(KiroSettings.MIN_START_TIMEOUT, KiroSettings.MAX_START_TIMEOUT)
         syncing = true
         try {
             shellField.text = s.kiroShell
@@ -127,6 +144,7 @@ class KiroConfigurable : Configurable {
 
     private companion object {
         const val DEFAULT_FONT = "(IDE default)"
+        const val ENGINE_DEFAULT = "(kiro-cli default)"
         const val HINT_WIDTH = 420
     }
 }

@@ -6,7 +6,9 @@ import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.components.JBLabel
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import com.kirogui.jetbrains.kiro.AgentInfo
 import com.kirogui.jetbrains.kiro.HookInfo
+import com.kirogui.jetbrains.kiro.McpInfo
 import com.kirogui.jetbrains.kiro.RelativeTime
 import com.kirogui.jetbrains.kiro.ResourceItem
 import com.kirogui.jetbrains.kiro.SessionNode
@@ -29,6 +31,8 @@ enum class SectionKind(val title: String, val icon: Icon) {
     STEERING("Steering", AllIcons.Actions.Edit),
     SPECS("Specs", AllIcons.Nodes.Package),
     HOOKS("Hooks", AllIcons.Actions.Execute),
+    AGENTS("Agents", AllIcons.General.User),
+    MCP("MCP servers", AllIcons.Nodes.Plugin),
 }
 
 /** What a row in the Library tree stands for. */
@@ -40,6 +44,8 @@ sealed interface LibNode {
     data class Spec(val spec: SpecInfo) : LibNode
     data class SpecFile(val spec: SpecInfo, val label: String, val path: Path) : LibNode
     data class Hook(val hook: HookInfo) : LibNode
+    data class Agent(val agent: AgentInfo, val active: Boolean) : LibNode
+    data class Mcp(val server: McpInfo) : LibNode
 }
 
 /**
@@ -130,6 +136,29 @@ class LibraryTreeRenderer(
                 if (!h.enabled) title.append("  off", badge)
                 title.append("  ${h.scope.label}", small)
                 detailLine(listOfNotNull(h.trigger, h.matcher?.let { "/$it/" }, "→ ${h.actionType}").joinToString("  "), small)
+            }
+            is LibNode.Agent -> {
+                iconLabel.icon = AllIcons.General.User
+                val a = node.agent
+                if (node.active) title.append("● ", badge)
+                title.append(a.name, if (node.active) bold else plain)
+                title.append("  ${a.scope.label}", small)
+                if (node.active) title.append("  in use", badge)
+                val mcp = when {
+                    a.ownMcp.isNotEmpty() -> "MCP: " + a.ownMcp.joinToString(", ") + if (a.includeMcpJson) " + mcp.json" else ""
+                    a.includeMcpJson -> "MCP: mcp.json"
+                    else -> "no MCP"
+                }
+                val line = listOfNotNull(a.model, if (a.toolCount > 0) "${a.toolCount} tools" else null, mcp)
+                detailLine(line.joinToString("  ·  ").ifBlank { a.description }, small)
+            }
+            is LibNode.Mcp -> {
+                iconLabel.icon = AllIcons.Nodes.Plugin
+                val m = node.server
+                title.append(m.name, if (m.enabled) plain else attrs(quiet, SimpleTextAttributes.STYLE_STRIKEOUT))
+                title.append(if (m.enabled) "  on" else "  off", badge)
+                title.append("  ${m.scope.label}  ${m.transport}", small)
+                detailLine(listOfNotNull(m.offReason, m.summary.takeIf { it.isNotBlank() }).joinToString("  ·  "), small)
             }
             else -> title.append(node?.toString().orEmpty(), plain)
         }

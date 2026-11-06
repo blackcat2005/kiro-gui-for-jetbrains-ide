@@ -1,6 +1,8 @@
 package com.kirogui.jetbrains.ui
 
+import com.kirogui.jetbrains.kiro.AgentInfo
 import com.kirogui.jetbrains.kiro.Folder
+import com.kirogui.jetbrains.kiro.McpInfo
 import com.kirogui.jetbrains.kiro.HookInfo
 import com.kirogui.jetbrains.kiro.KiroSession
 import com.kirogui.jetbrains.kiro.ResourceItem
@@ -68,6 +70,17 @@ class LibraryRenderTest {
                 LibNode.Section(SectionKind.HOOKS, 2),
                 node(LibNode.Hook(HookInfo("lint", Path.of("h"), Scope.WORKSPACE, "PostFileSave", "\\.(ts|tsx)$", "command", true, null))),
                 node(LibNode.Hook(HookInfo("guard", Path.of("h"), Scope.GLOBAL, "PreToolUse", null, "agent", false, null))),
+            ),
+            node(
+                LibNode.Section(SectionKind.AGENTS, 2),
+                node(LibNode.Agent(AgentInfo("lean", Scope.GLOBAL, Path.of("a"), "cheap", "claude-haiku-4.5", emptyList(), false, 6), true)),
+                node(LibNode.Agent(AgentInfo("kirocrew", Scope.GLOBAL, Path.of("a"), "", "auto", listOf("kirocrew-core", "codegraph"), false, 16), false)),
+            ),
+            node(
+                LibNode.Section(SectionKind.MCP, 3),
+                node(LibNode.Mcp(McpInfo("codegraph", Scope.GLOBAL, Path.of("m"), "stdio", "codegraph serve --mcp", true, null))),
+                node(LibNode.Mcp(McpInfo("figma", Scope.GLOBAL, Path.of("m"), "http", "https://mcp.figma.com/mcp", false, "disabled"))),
+                node(LibNode.Mcp(McpInfo("dup", Scope.GLOBAL, Path.of("m"), "stdio", "node server.js", false, "replaced by the workspace entry"))),
             ),
         )
         return JTree(DefaultTreeModel(root)).apply {

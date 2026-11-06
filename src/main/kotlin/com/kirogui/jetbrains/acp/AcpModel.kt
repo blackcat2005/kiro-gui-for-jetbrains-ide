@@ -15,6 +15,8 @@ sealed interface AcpEvent {
     /** `_kiro.dev/metadata`: context window usage and, per turn, credits spent. */
     data class Metadata(val contextPercent: Double?, val credits: Double?) : AcpEvent
     data class Commands(val commands: List<SlashCommand>) : AcpEvent
+    /** Something Kiro wants the user to see, such as an MCP server that failed to connect. */
+    data class DisplayError(val message: String) : AcpEvent
     data class Other(val type: String) : AcpEvent
     data class Closed(val reason: String?) : AcpEvent
 }
@@ -30,6 +32,8 @@ data class SessionInfo(
     val currentModeId: String?,
     val models: List<Choice>,
     val currentModelId: String?,
+    /** True when the models came from the v3 `model` config option; they are then changed with `session/set_config_option`. */
+    val modelViaConfig: Boolean = false,
 )
 
 data class PermissionOption(val id: String, val name: String, val kind: String?)

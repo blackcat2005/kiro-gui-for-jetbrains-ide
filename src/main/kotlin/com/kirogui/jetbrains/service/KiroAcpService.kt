@@ -70,7 +70,7 @@ class KiroAcpService(private val project: Project) : Disposable {
 
     fun setModel(modelId: String): CompletableFuture<Unit> = async {
         val (c, session) = live()
-        c.setModel(session.sessionId, modelId)
+        c.setModel(session.sessionId, modelId, session.modelViaConfig)
         synchronized(this) {
             preferredModel = modelId
             info = info?.copy(currentModelId = modelId)
@@ -94,6 +94,9 @@ class KiroAcpService(private val project: Project) : Disposable {
 
     /** The id of the live session, or null before one is started. Cheap and lock-free. */
     fun currentSessionId(): String? = info?.sessionId
+
+    /** The agent the live session runs as (ACP calls agents "modes"), or null before a session exists. */
+    fun currentAgentId(): String? = info?.currentModeId
 
     fun cancel() {
         val c = client
@@ -144,12 +147,21 @@ class KiroAcpService(private val project: Project) : Disposable {
         val previous = info?.sessionId
         // While opening, only the target session's events may reach the UI. A new session's id isn't known yet.
         c.activeSession = resumeId ?: PENDING
+        c.startTimeoutSeconds = startTimeout()
+        val opening = System.nanoTime()
+        log.info(if (resumeId != null) "Loading session $resumeId" else "Opening a new session")
         var session = try {
             if (resumeId != null) c.loadSession(resumeId, cwd) else c.newSession(cwd)
         } catch (e: Exception) {
             c.activeSession = previous
+            log.warn("Opening the session failed after ${(System.nanoTime() - opening) / 1_000_000} ms", e)
+            val text = e.cause?.message ?: e.message.orEmpty()
+            if (AUTH_HINT.containsMatchIn(text)) {
+                throw IllegalStateException("$text\n\nSign in with `kiro-cli login` in a terminal, then press Retry.", e)
+            }
             throw e
         }
+        log.info("Session ${session.sessionId} ready in ${(System.nanoTime() - opening) / 1_000_000} ms")
         // A reloaded session keeps its own agent and model; only fresh sessions get the remembered choice.
         if (resumeId == null) {
             preferredMode?.takeIf { it != session.currentModeId && session.modes.any { m -> m.id == it } }?.let {
@@ -157,7 +169,7 @@ class KiroAcpService(private val project: Project) : Disposable {
                 session = session.copy(currentModeId = it)
             }
             preferredModel?.takeIf { it != session.currentModelId && session.models.any { m -> m.id == it } }?.let {
-                c.setModel(session.sessionId, it)
+                c.setModel(session.sessionId, it, session.modelViaConfig)
                 session = session.copy(currentModelId = it)
             }
         }
@@ -167,15 +179,28 @@ class KiroAcpService(private val project: Project) : Disposable {
         return session
     }
 
+    private fun startTimeout(): Long = KiroSettings.getInstance().state.startTimeoutSeconds
+        .coerceIn(KiroSettings.MIN_START_TIMEOUT, KiroSettings.MAX_START_TIMEOUT).toLong()
+
     private fun launch(cwd: String): AcpClient {
         val settings = KiroSettings.getInstance().state
-        val cmd = GeneralCommandLine(KiroLaunch.command(settings.kiroPath, settings.kiroArgs, settings.kiroShell))
+        val cmd = GeneralCommandLine(
+            KiroLaunch.command(settings.kiroPath, KiroLaunch.withEngine(settings.kiroArgs, settings.agentEngine), settings.kiroShell),
+        )
             .withWorkDirectory(cwd)
             .withCharset(Charsets.UTF_8)
             .withEnvironment(KiroLaunch.environment(settings.kiroEnv))
+        log.info("Starting kiro-cli: ${cmd.commandLineString} (cwd $cwd)")
+        val began = System.nanoTime()
         val proc = cmd.createProcess()
+        log.info("kiro-cli started, pid ${proc.pid()}")
+        val stderrTail = java.util.concurrent.ConcurrentLinkedDeque<String>()
         Thread({
-            proc.errorStream.bufferedReader().forEachLine { log.info("kiro-cli: $it") }
+            proc.errorStream.bufferedReader().forEachLine {
+                log.info("kiro-cli: $it")
+                stderrTail.addLast(it)
+                while (stderrTail.size > 8) stderrTail.pollFirst()
+            }
         }, "kiro-cli-stderr").apply { isDaemon = true }.start()
 
         val c = AcpClient(
@@ -196,13 +221,24 @@ class KiroAcpService(private val project: Project) : Disposable {
                 }
             },
         )
+        c.startTimeoutSeconds = startTimeout()
         c.start()
         try {
             c.initialize()
+            log.info("kiro-cli initialized in ${(System.nanoTime() - began) / 1_000_000} ms")
         } catch (e: Exception) {
+            log.warn("kiro-cli handshake failed after ${(System.nanoTime() - began) / 1_000_000} ms; last output: ${stderrTail.joinToString(" | ")}")
             c.close()
-            proc.destroy()
-            throw e
+            killTree(proc)
+            val cause = (e as? java.util.concurrent.ExecutionException)?.cause ?: e
+            val why = if (cause is java.util.concurrent.TimeoutException) {
+                "kiro-cli did not answer within ${startTimeout()} s. Security software may be scanning or blocking it; " +
+                    "the limit is in Settings → Tools → Kiro."
+            } else {
+                cause.message ?: cause.javaClass.simpleName
+            }
+            val output = stderrTail.joinToString("\n").takeIf { it.isNotBlank() }
+            throw IllegalStateException(if (output != null) "$why\n\nkiro-cli said:\n$output" else why, e)
         }
         process = proc
         client = c
@@ -219,7 +255,28 @@ class KiroAcpService(private val project: Project) : Disposable {
         info = null
         sessionsInProcess = 0
         c?.close()
-        p?.destroy()
+        p?.let { killTree(it) }
+    }
+
+    /**
+     * Ends [p] and everything it started. On Windows `destroy()` only ends the process itself, so the engine (node)
+     * and MCP servers it launched would otherwise keep running after a restart.
+     */
+    private fun killTree(p: Process) {
+        // Collected first: once the parent is gone its children are no longer reachable through it.
+        val children = try {
+            p.descendants().toList()
+        } catch (_: Exception) {
+            emptyList()
+        }
+        p.destroy()
+        for (child in children) {
+            try {
+                child.destroyForcibly()
+            } catch (e: Exception) {
+                log.info("Could not stop child process ${child.pid()}", e)
+            }
+        }
     }
 
     private fun ideaPermissionHandler() = PermissionHandler { request ->
@@ -258,5 +315,6 @@ class KiroAcpService(private val project: Project) : Disposable {
     private companion object {
         const val MAX_SESSIONS_PER_PROCESS = 6
         const val PENDING = "\u0000pending"
+        val AUTH_HINT = Regex("auth|log ?in|sign ?in|credential|token|unauthori[sz]ed", RegexOption.IGNORE_CASE)
     }
 }

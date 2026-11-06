@@ -66,6 +66,59 @@ class KiroCoreTest {
     }
 
     @Test
+    fun `agents are read from json files and backups are ignored`() {
+        val r = res()
+        val dir = tmp.resolve("home/.kiro/agents").also { Files.createDirectories(it) }
+        Files.writeString(
+            dir.resolve("lean.json"),
+            """{"name":"lean","description":"cheap","model":"haiku","tools":["a","b"],"includeMcpJson":false,"mcpServers":{"x":{}}}""",
+        )
+        Files.writeString(dir.resolve("lean.json.bak"), """{"name":"lean-old"}""")
+        Files.writeString(dir.resolve("broken.json"), "{ not json")
+        val created = r.createAgent("helper", "Helps", Scope.WORKSPACE)
+        assertTrue(Files.exists(created))
+
+        val agents = r.agents().associateBy { it.name }
+        assertEquals(setOf("helper", "lean"), agents.keys)
+        val lean = agents.getValue("lean")
+        assertEquals(Scope.GLOBAL, lean.scope)
+        assertEquals(listOf("x"), lean.ownMcp)
+        assertFalse(lean.includeMcpJson)
+        assertEquals(2, lean.toolCount)
+        assertTrue(agents.getValue("helper").includeMcpJson, "mcp.json is included unless the agent says otherwise")
+        r.deleteAgent(agents.getValue("helper"))
+        assertEquals(setOf("lean"), r.agents().map { it.name }.toSet())
+    }
+
+    @Test
+    fun `mcp servers show which are on and which are replaced`() {
+        val r = res()
+        fun write(rel: String, text: String) {
+            val f = tmp.resolve(rel)
+            Files.createDirectories(f.parent)
+            Files.writeString(f, text)
+        }
+        write("home/.kiro/settings/mcp.json", """{"mcpServers":{
+            "git":{"command":"npx","args":["git-mcp"]},
+            "old":{"command":"x","disabled":true},
+            "dup":{"command":"global"},
+            "web":{"url":"https://example.com/mcp"}}}""")
+        write("ws/.kiro/settings/mcp.json", """{"mcpServers":{"dup":{"command":"workspace"}}}""")
+
+        val byKey = r.mcpServers().associateBy { it.name + "/" + it.scope.label }
+        assertTrue(byKey.getValue("git/global").enabled)
+        assertEquals("npx git-mcp", byKey.getValue("git/global").summary)
+        assertFalse(byKey.getValue("old/global").enabled)
+        assertEquals("disabled", byKey.getValue("old/global").offReason)
+        assertEquals("http", byKey.getValue("web/global").transport)
+        assertTrue(byKey.getValue("dup/workspace").enabled)
+        assertFalse(byKey.getValue("dup/global").enabled)
+
+        val file = r.ensureMcpFile(Scope.GLOBAL)
+        assertTrue(Files.readString(file).contains("git-mcp"), "an existing file is left alone")
+    }
+
+    @Test
     fun `hooks list toggle and delete`() {
         val r = res()
         val file = r.createHook("lint", "PostFileSave", "\\.ts$", "npx eslint --fix", Scope.WORKSPACE)

@@ -3,10 +3,53 @@
     <name>Kiro GUI (ACP)</name>
     <vendor url="https://github.com/blackcat2005/kiro-gui-for-jetbrains-ide">blackcat20052003</vendor>
     <description><![CDATA[
-        Chat with <a href="https://kiro.dev">Kiro</a> inside JetBrains IDEs. Talks to
-        <code>kiro-cli acp</code> over the Agent Client Protocol (JSON-RPC over stdio):
-        streaming responses, per-tool permission prompts, cancellation, and editor-aware file access.
-        Requires kiro-cli to be installed and signed in.
+        <p>A chat window for <a href="https://kiro.dev">Kiro</a> inside JetBrains IDEs. The plugin starts your local
+        <code>kiro-cli acp</code> and talks to it over the Agent Client Protocol (JSON-RPC over stdio), so there is no
+        embedded browser and no local server.</p>
+
+        <h3>Chat</h3>
+        <ul>
+            <li>Streaming Markdown answers with syntax-coloured code blocks, Copy buttons, and Stop</li>
+            <li>File names in answers are links that open the file (at the line, when one is given)</li>
+            <li>Agent and model pickers, context usage, credits per session and your plan's credits</li>
+            <li>Review file edits as an IDE diff before Kiro applies them; per-tool permission prompts</li>
+            <li>Coloured diff rows with Copy diff / Copy new</li>
+        </ul>
+
+        <h3>Give Kiro context</h3>
+        <ul>
+            <li>Attach files, selected code (<em>Send to Kiro</em>, Ctrl+Alt+K) and images; paste screenshots with Ctrl+V</li>
+            <li>The open editor file is attached automatically (can be turned off); <code>@</code> picks project files</li>
+            <li>Long pastes become compact chips instead of filling the input</li>
+            <li><code>/</code> suggests Kiro's slash commands and your skills</li>
+        </ul>
+
+        <h3>Library</h3>
+        <ul>
+            <li>Sessions in your own folders, grouped by date, with tangents under their parent; reopen, rename, move</li>
+            <li>Skills, steering, specs (with task progress), hooks, agents and MCP servers from <code>.kiro/</code>,
+                with what is switched on and what is off</li>
+        </ul>
+
+        <h3>Settings</h3>
+        <ul>
+            <li>kiro-cli path, arguments, environment variables, and the shell to run it through (PowerShell, cmd, bash, WSL)</li>
+            <li>Choice of kiro-cli engine and a start timeout for machines where security software slows kiro-cli down</li>
+            <li>Chat font and size; a notification when Kiro finishes a reply</li>
+        </ul>
+
+        <p>Works with kiro-cli 2.x and 3.x.</p>
+
+        <h3>Requirements</h3>
+        <p>kiro-cli must be installed and signed in (<code>kiro-cli login</code>). IDE version 2025.1 or newer.</p>
+
+        <h3>Privacy</h3>
+        <p>The plugin itself sends nothing anywhere. It runs the kiro-cli you installed; what that program sends to
+        Kiro's service is governed by Kiro's own terms and settings. Prompts, attached files and images are passed to
+        kiro-cli on your machine.</p>
+
+        <p><small>This is an independent, community-made plugin. It is not affiliated with or endorsed by Amazon Web
+        Services or the Kiro team. Kiro is a trademark of its owner.</small></p>
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>

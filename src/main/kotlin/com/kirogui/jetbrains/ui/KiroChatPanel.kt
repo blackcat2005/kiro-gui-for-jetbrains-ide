@@ -150,6 +150,7 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
     private var transient: String? = null
     private var usageText = ""
     private var credits = 0.0
+    private var lastDisplayError: String? = null // Kiro repeats the same warning; show it once
 
     // Which conversation is on screen. Callbacks from earlier requests compare `generation` and drop themselves.
     private var generation = 0
@@ -867,6 +868,10 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
             }
             is AcpEvent.Plan -> notice("Plan:\n" + event.entries.joinToString("\n") { "• $it" })
             is AcpEvent.Commands -> commands = event.commands
+            is AcpEvent.DisplayError -> if (event.message != lastDisplayError) {
+                lastDisplayError = event.message
+                notice("⚠ ${event.message}")
+            }
             is AcpEvent.Metadata -> {
                 event.credits?.let { credits += it }
                 val parts = listOfNotNull(

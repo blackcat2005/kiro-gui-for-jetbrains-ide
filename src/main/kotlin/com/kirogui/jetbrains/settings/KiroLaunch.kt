@@ -28,6 +28,10 @@ object KiroLaunch {
      * template (e.g. `bash -l -c {cmd}`) the whole line is handed to that shell as one argument, so kiro-cli sees
      * the shell's PATH and profile; a template without `{cmd}` gets the line appended.
      */
+    /** [args] with `--agent-engine <engine>` added; unchanged when no engine is chosen or the arguments already name one. */
+    fun withEngine(args: String, engine: String): String =
+        if (engine.isBlank() || args.contains("--agent-engine")) args else "$args --agent-engine ${engine.trim()}".trim()
+
     fun command(path: String, extraArgs: String, shell: String = ""): List<String> {
         val parts = listOf(path.trim().ifEmpty { "kiro-cli" }, "acp") + ParametersListUtil.parse(extraArgs.trim())
         val tokens = ParametersListUtil.parse(shell.trim())

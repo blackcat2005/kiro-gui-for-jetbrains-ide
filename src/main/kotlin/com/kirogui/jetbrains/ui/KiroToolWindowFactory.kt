@@ -25,6 +25,7 @@ class KiroToolWindowFactory : ToolWindowFactory, DumbAware {
                 host.chat.prefillInput("/$name ")
             },
             currentSessionId = { host.chat.currentSessionId() },
+            currentAgent = { project.getService(com.kirogui.jetbrains.service.KiroAcpService::class.java).currentAgentId() },
         )
         toolWindow.contentManager.addContent(factory.createContent(library, "Library", false))
     }

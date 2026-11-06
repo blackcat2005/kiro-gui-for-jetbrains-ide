@@ -25,6 +25,12 @@ class KiroSettings : PersistentStateComponent<KiroSettings.State> {
         /** Shell template that kiro-cli is started through (`bash -l -c {cmd}`); blank starts it directly. */
         var kiroShell: String = ""
 
+        /** `--agent-engine` value for kiro-cli 3.x (`v1`, `v2`, `v3`); blank leaves the choice to kiro-cli. */
+        var agentEngine: String = ""
+
+        /** How long to wait for kiro-cli to start and to open or reload a session, in seconds. */
+        var startTimeoutSeconds: Int = DEFAULT_START_TIMEOUT
+
         /** The file in the selected editor tab is attached to every prompt (a chip you can dismiss). */
         var autoAttachOpenFile: Boolean = true
 
@@ -55,6 +61,10 @@ class KiroSettings : PersistentStateComponent<KiroSettings.State> {
     }
 
     companion object {
+        const val DEFAULT_START_TIMEOUT = 120
+        const val MIN_START_TIMEOUT = 10
+        const val MAX_START_TIMEOUT = 1800
+
         val TOPIC: Topic<Listener> = Topic.create("Kiro GUI settings", Listener::class.java)
 
         fun getInstance(): KiroSettings = service()

@@ -130,6 +130,8 @@ class InputCompletion(
             applying = false
         }
         hide()
+        // "/model " is not finished: offer what can follow it (the commands that take an argument) straight away.
+        if (chosen.kind == SuggestionKind.COMMAND) schedule()
     }
 
     private fun schedule() {

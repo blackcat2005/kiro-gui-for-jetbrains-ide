@@ -59,7 +59,7 @@ object TranscriptReader {
             "Prompt" -> {
                 val text = content.mapNotNull { (it as? JsonObject)?.takeIf { c -> str(c, "kind") == "text" }?.let { c -> str(c, "data") } }
                     .joinToString("\n").trim()
-                if (text.isNotEmpty()) out.add(PreviewItem.User(text))
+                if (text.isNotEmpty()) out.add(PreviewItem.User(com.kirogui.jetbrains.jobs.ToolGuidance.withoutReminder(text)))
             }
             "AssistantMessage" -> content.forEach { part ->
                 val c = part as? JsonObject ?: return@forEach
@@ -78,7 +78,7 @@ object TranscriptReader {
     private fun v3(o: JsonObject, out: MutableList<PreviewItem>) {
         val p = o["payload"] as? JsonObject ?: return
         when (str(p, "type")) {
-            "user" -> str(p, "content")?.trim()?.takeIf { it.isNotEmpty() }?.let { out.add(PreviewItem.User(it)) }
+            "user" -> str(p, "content")?.trim()?.takeIf { it.isNotEmpty() }?.let { out.add(PreviewItem.User(com.kirogui.jetbrains.jobs.ToolGuidance.withoutReminder(it))) }
             "assistant" -> if (str(p, "operationType") == "Say") {
                 str(p, "content")?.trim()?.takeIf { it.isNotEmpty() && it != "..." }?.let { addAssistant(out, it) }
             }

@@ -24,7 +24,16 @@ internal object AcpParse {
             ?.mapNotNull { it as? JsonObject }
             ?.firstOrNull { it.str("id") == "model" || it.str("category") == "model" }
         val viaConfig = v2Models.isEmpty() && modelOption != null
+        val effortOption = (result["configOptions"] as? JsonArray)
+            ?.mapNotNull { it as? JsonObject }
+            ?.firstOrNull { o ->
+                val key = (o.str("id") ?: "") + " " + (o.str("category") ?: "")
+                Regex("effort|reasoning|thought|thinking", RegexOption.IGNORE_CASE).containsMatchIn(key)
+            }
         return SessionInfo(
+            efforts = effortOption.configChoices(),
+            currentEffortId = effortOption?.str("currentValue"),
+            effortConfigId = effortOption?.str("id"),
             sessionId = sessionId,
             modes = modes.choices("availableModes", "id"),
             currentModeId = modes?.str("currentModeId"),
@@ -34,10 +43,19 @@ internal object AcpParse {
         )
     }
 
+    /** A `config_option_update`: the same `configOptions` array `session/new` carries, sent later. Null when it names neither models nor efforts. */
+    fun configUpdate(update: JsonObject): AcpEvent.ConfigOptions? {
+        val options = update["configOptions"] as? JsonArray ?: return null
+        val info = session(JsonObject(mapOf("configOptions" to options)), "")
+        if (info.models.isEmpty() && info.efforts.isEmpty()) return null
+        return AcpEvent.ConfigOptions(info.models, info.currentModelId, info.efforts, info.currentEffortId, info.effortConfigId)
+    }
+
     /** `session_info_update` carries context use, per-turn credits and errors in `_meta.kiro`. Null when it's none of those. */
     fun sessionInfo(update: JsonObject): AcpEvent? {
         val kiro = ((update["_meta"] as? JsonObject)?.get("kiro") as? JsonObject) ?: return null
         val kind = kiro.str("kind")
+        if ((kiro["summarization"] as? JsonObject)?.str("status") == "success") return AcpEvent.Compacted
         val context = (kiro["contextUsage"] as? JsonObject)?.get("usagePercentage")?.jsonPrimitive?.doubleOrNull
         return when {
             kind == "display_error" -> {
@@ -53,6 +71,14 @@ internal object AcpParse {
             context != null -> AcpEvent.Metadata(context, null)
             else -> null
         }
+    }
+
+    /** `initialize` result: `agentCapabilities.mcpCapabilities.http` (some builds put `mcpCapabilities` at the top). */
+    fun httpMcp(init: kotlinx.serialization.json.JsonElement?): Boolean {
+        val o = init as? JsonObject ?: return false
+        val caps = ((o["agentCapabilities"] as? JsonObject)?.get("mcpCapabilities") ?: o["mcpCapabilities"]) as? JsonObject
+            ?: return false
+        return (caps["http"] as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull == "true"
     }
 
     /** `available_commands_update`: the v3 engine lists agents you can hand a task to; they are typed as `/name`. */

@@ -9,7 +9,7 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.actionSystem.ToggleAction
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
@@ -73,6 +73,10 @@ class KiroLibraryPanel(
     private val currentSessionId: () -> String? = { null },
     /** Name of the agent the chat is using, so it can be marked in the Agents list. */
     private val currentAgent: () -> String? = { null },
+    /** Opens a session in a chat tab of its own (null: no such menu entry). */
+    private val onOpenSessionInNewTab: ((KiroSession) -> Unit)? = null,
+    /** A "New chat" button in the full (non-compact) toolbar; null: none. */
+    private val onNewChatButton: (() -> Unit)? = null,
 ) : JPanel(BorderLayout()) {
 
     private class Snapshot(
@@ -94,21 +98,23 @@ class KiroLibraryPanel(
     private var thisProjectOnly = true
     private var hideEmpty = true
     private var expandedKeys: Set<String>? = null // null until the first build; then what the user left open
+    private var rebuilding = false // the tree opens and closes nodes itself while it is rebuilt; that is not the user's choice
 
     private val search = JBTextField().apply { emptyText.text = "Filter by name" }
     private val summary = JBLabel(" ")
+    private var renderer: LibraryTreeRenderer? = null
     private val tree = Tree(DefaultTreeModel(DefaultMutableTreeNode())).apply {
         isRootVisible = false
         showsRootHandles = true
         rowHeight = 0 // let each row be as tall as its renderer wants (two-line rows)
-        cellRenderer = LibraryTreeRenderer(current = currentSessionId)
+        cellRenderer = LibraryTreeRenderer(current = currentSessionId).also { renderer = it }
         emptyText.text = "Nothing here yet"
     }
     private lateinit var toolbarComponent: javax.swing.JComponent
 
     init {
         add(if (compact) compactHeader() else header(), BorderLayout.NORTH)
-        add(JBScrollPane(tree).apply { border = JBUI.Borders.empty() }, BorderLayout.CENTER)
+        add(JBScrollPane(tree, JBScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED, JBScrollPane.HORIZONTAL_SCROLLBAR_NEVER).apply { border = JBUI.Borders.empty() }, BorderLayout.CENTER)
         add(summary.apply { border = JBUI.Borders.empty(3, 8) }, BorderLayout.SOUTH)
 
         search.document.addDocumentListener(object : DocumentListener {
@@ -120,9 +126,12 @@ class KiroLibraryPanel(
             override fun mouseClicked(e: MouseEvent) {
                 if (e.button != MouseEvent.BUTTON1) return
                 if (compact) {
-                    if (e.clickCount == 1) singleClick(e)
+                    when (e.clickCount) {
+                        1 -> singleClick(e)
+                        2 -> doubleClick(e)
+                    }
                 } else if (e.clickCount == 2) {
-                    activate()
+                    if (!openInNewTab(e)) activate()
                 }
             }
 
@@ -146,6 +155,20 @@ class KiroLibraryPanel(
         })
         if (compact) tree.toggleClickCount = 0 // single click expands/collapses folders itself
         installDragAndDrop()
+        // Remember each branch the user opens or closes as it happens. It used to be read back only after a rebuild, so
+        // whatever was opened before (or by "Expand all") came back open after moving a session into a folder.
+        tree.addTreeExpansionListener(object : javax.swing.event.TreeExpansionListener {
+            private fun track(e: javax.swing.event.TreeExpansionEvent, open: Boolean) {
+                val keys = expandedKeys ?: return
+                if (rebuilding) return
+                val key = keyOf((e.path.lastPathComponent as? DefaultMutableTreeNode)?.userObject) ?: return
+                expandedKeys = if (open) keys + key else keys - key
+            }
+
+            override fun treeExpanded(e: javax.swing.event.TreeExpansionEvent) = track(e, true)
+
+            override fun treeCollapsed(e: javax.swing.event.TreeExpansionEvent) = track(e, false)
+        })
         // Kiro writes sessions and files while you work; refresh whenever the tab comes into view.
         addHierarchyListener { e ->
             if (e.changeFlags and HierarchyEvent.SHOWING_CHANGED.toLong() != 0L && isShowing) reload()
@@ -155,22 +178,43 @@ class KiroLibraryPanel(
     // ---------- header ----------
 
     private fun header(): JPanel {
-        val group = DefaultActionGroup().apply {
-            add(action("New…", AllIcons.General.Add) { showNewMenu() })
-            add(toggle("This project only", AllIcons.Nodes.Module, { thisProjectOnly }) { thisProjectOnly = it; rebuild() })
-            add(toggle("Hide empty sessions", AllIcons.General.Filter, { hideEmpty }) { hideEmpty = it; rebuild() })
-            add(action("Expand all", AllIcons.Actions.Expandall) { setAllExpanded(true) })
-            add(action("Collapse all", AllIcons.Actions.Collapseall) { setAllExpanded(false) })
-            add(action("Refresh", AllIcons.Actions.Refresh) { reload() })
+        // Few buttons you use all the time; the rest sit behind "More". The chat's own "+" is in the panel's top bar.
+        var moreButton: javax.swing.JComponent? = null
+        val more = iconButton(AllIcons.Actions.More, "More: hide empty sessions, expand, collapse, refresh") {
+            moreButton?.let { showMoreMenu(it) }
         }
-        val toolbar = ActionManager.getInstance().createActionToolbar("KiroLibrary", group, true)
-        toolbar.targetComponent = this
-        toolbarComponent = toolbar.component
+        moreButton = more
+        toolbarComponent = iconRow(
+            iconButton(AllIcons.Actions.NewFolder, "New folder, skill, steering file, spec…") { showNewMenu() },
+            iconToggle(AllIcons.Nodes.Module, "This project only", thisProjectOnly) { thisProjectOnly = it; rebuild() },
+            more,
+        )
         return JPanel(BorderLayout()).apply {
-            border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(com.intellij.ui.JBColor.border()), JBUI.Borders.empty(2, 4))
+            border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(com.intellij.ui.JBColor.border()), JBUI.Borders.empty(0, 4))
+            preferredSize = java.awt.Dimension(0, JBUI.scale(PANEL_HEADER_HEIGHT))
             add(toolbarComponent, BorderLayout.WEST)
             add(search.apply { border = JBUI.Borders.empty(2, 6) }, BorderLayout.CENTER)
         }
+    }
+
+    private fun showMoreMenu(anchor: javax.swing.JComponent) {
+        val menu = javax.swing.JPopupMenu()
+        menu.add(javax.swing.JCheckBoxMenuItem("Hide empty sessions", hideEmpty).apply {
+            addActionListener { hideEmpty = isSelected; rebuild() }
+        })
+        menu.addSeparator()
+        menu.add(javax.swing.JMenuItem("Expand all").apply { addActionListener { setAllExpanded(true) } })
+        menu.add(javax.swing.JMenuItem("Collapse all").apply { addActionListener { setAllExpanded(false) } })
+        menu.add(javax.swing.JMenuItem("Refresh").apply { addActionListener { reload() } })
+        menu.addSeparator()
+        menu.add(javax.swing.JMenuItem("Install Kiro guidance for all Kiro GUI tools…").apply {
+            toolTipText = "Adds an always-on steering file so Kiro uses all of Kiro GUI's tools: code navigation, test runner, debugger, background jobs"
+            addActionListener {
+                val scope = askScope() ?: return@addActionListener
+                guarded { open(resources().installToolGuidance(scope)) }
+            }
+        })
+        menu.show(anchor, 0, anchor.height)
     }
 
     private fun compactHeader(): JPanel {
@@ -210,6 +254,13 @@ class KiroLibraryPanel(
     /** Re-reads Kiro's files; call after something changed (a turn finished, a session was created). */
     fun refresh() = reload()
 
+    /** Called after the list was re-read (names may have changed: Kiro titled a session, or you renamed it). */
+    var onLoaded: (() -> Unit)? = null
+
+    /** The name the list shows for a session (your rename, else Kiro's title, else the first question); null if unknown. */
+    fun sessionName(id: String): String? =
+        snapshot?.sessions?.firstOrNull { it.id == id }?.let { organizer.alias(it.id) ?: it.takeIf { s -> s.title != null || s.firstPrompt != null }?.kiroName }
+
     private fun reload() {
         if (!compact) summary.text = "Reading…"
         ApplicationManager.getApplication().executeOnPooledThread {
@@ -225,6 +276,7 @@ class KiroLibraryPanel(
             ApplicationManager.getApplication().invokeLater {
                 snapshot = snap
                 rebuild()
+                onLoaded?.invoke()
             }
         }
     }
@@ -232,6 +284,7 @@ class KiroLibraryPanel(
     private fun rebuild() {
         val snap = snapshot ?: return
         val query = search.text.trim()
+        renderer?.showProject = !thisProjectOnly
         val filter = SessionFilter(if (thisProjectOnly) project.basePath else null, hideEmpty, query, setOfNotNull(currentSessionId()))
         val sessionNodes = SessionTree.build(snap.sessions, organizer, filter, groupByDate = true)
 
@@ -259,6 +312,7 @@ class KiroLibraryPanel(
         if (!compact) section(SectionKind.AGENTS, agents.size, agents.map { DefaultMutableTreeNode(LibNode.Agent(it, it.name == activeAgent)) })
         if (!compact) section(SectionKind.MCP, mcp.size, mcp.map { DefaultMutableTreeNode(LibNode.Mcp(it)) })
 
+        rebuilding = true
         tree.model = DefaultTreeModel(root)
         forEachNode(root) { n ->
             val key = keyOf(n.userObject)
@@ -269,14 +323,19 @@ class KiroLibraryPanel(
             }
             if (open && n.childCount > 0 && n !== root) tree.expandPath(TreePath(n.path))
         }
-        expandedKeys = currentExpandedKeys()
+        rebuilding = false
+        // A filter opens everything for a moment; what the user had open stays as it was.
+        if (firstBuild) expandedKeys = currentExpandedKeys() else if (query.isBlank()) expandedKeys = previous
         if (compact) {
             selectCurrent(root)
             summary.text = "${SessionTree.countItems(sessionNodes)} sessions"
         } else {
-            summary.text = "${SessionTree.countItems(sessionNodes)} of ${snap.sessions.size} sessions  ·  " +
+            val full = "${SessionTree.countItems(sessionNodes)} of ${snap.sessions.size} sessions  ·  " +
                 "${skills.size} skills  ·  ${steering.size} steering  ·  ${specs.size} specs  ·  ${hooks.size} hooks  ·  " +
                 "${agents.size} agents  ·  ${mcp.count { it.enabled }}/${mcp.size} MCP on"
+            // Short enough for a narrow column; the full line is the tooltip.
+            summary.text = "${SessionTree.countItems(sessionNodes)} of ${snap.sessions.size} sessions  ·  ${agents.size} agents"
+            summary.toolTipText = full
         }
     }
 
@@ -294,14 +353,40 @@ class KiroLibraryPanel(
 
     private fun selectedFolderId(): String? = ((selected() as? LibNode.Sess)?.node as? SessionNode.FolderNode)?.folder?.id
 
-    /** Sidebar behaviour: one click opens a session (if Kiro can reload it) or expands/collapses a folder or date. */
+    private var pendingOpen: javax.swing.Timer? = null
+
+    /**
+     * Sidebar behaviour: one click opens a session (if Kiro can reload it) in the chat you are in, or expands/collapses a
+     * folder or date. The session waits one double-click interval first: a double click opens it in a tab of its own
+     * instead, and must not have replaced the open chat on its first click.
+     */
     private fun singleClick(e: MouseEvent) {
         val path = tree.getPathForLocation(e.x, e.y) ?: return
         val node = ((path.lastPathComponent as? DefaultMutableTreeNode)?.userObject as? LibNode.Sess)?.node ?: return
         when (node) {
-            is SessionNode.Item -> onOpenSession(node.session)
+            is SessionNode.Item -> {
+                pendingOpen?.stop()
+                if (onOpenSessionInNewTab == null) return onOpenSession(node.session)
+                val wait = (java.awt.Toolkit.getDefaultToolkit().getDesktopProperty("awt.multiClickInterval") as? Int) ?: 500
+                pendingOpen = javax.swing.Timer(wait) { onOpenSession(node.session) }.apply { isRepeats = false; start() }
+            }
             is SessionNode.FolderNode, is SessionNode.Group -> if (tree.isExpanded(path)) tree.collapsePath(path) else tree.expandPath(path)
         }
+    }
+
+    private fun doubleClick(e: MouseEvent) {
+        pendingOpen?.stop()
+        pendingOpen = null
+        if (!openInNewTab(e)) singleClick(e)
+    }
+
+    /** Opens the session under the pointer in a new chat tab; false when it is not a session (or tabs are not available). */
+    private fun openInNewTab(e: MouseEvent): Boolean {
+        val newTab = onOpenSessionInNewTab ?: return false
+        val path = tree.getPathForLocation(e.x, e.y) ?: return false
+        val node = ((path.lastPathComponent as? DefaultMutableTreeNode)?.userObject as? LibNode.Sess)?.node as? SessionNode.Item ?: return false
+        newTab(node.session)
+        return true
     }
 
     // ---------- drag and drop ----------
@@ -450,7 +535,8 @@ class KiroLibraryPanel(
             is LibNode.Section -> add(newLabel(node.kind)) { guarded { create(node.kind) } }
             is LibNode.Sess -> when (val s = node.node) {
                 is SessionNode.Item -> {
-                    add(if (s.session.resumable) "Open in chat" else "View in chat (read-only)") { onOpenSession(s.session) }
+                    add("Open in chat") { onOpenSession(s.session) }
+                    onOpenSessionInNewTab?.let { newTab -> add("Open in new chat tab") { newTab(s.session) } }
                     add("Rename…") { rename(node) }
                     add("Move to folder…") { moveSession(s) }
                     add("Show file in file manager") { RevealFileAction.openFile(s.session.metaFile.toFile()) }
@@ -506,7 +592,7 @@ class KiroLibraryPanel(
     private fun showNewMenu() {
         val kinds = SectionKind.entries
         JBPopupFactory.getInstance().createPopupChooserBuilder(kinds)
-            .setRenderer(SimpleListCellRenderer.create("") { newLabel(it) })
+            .setRenderer(SimpleListCellRenderer.create { l, v, _ -> l.text = v?.let { newLabel(it) } ?: "" })
             .setItemChosenCallback { kind -> guarded { create(kind) } }
             .createPopup()
             .showUnderneathOf(toolbarComponent)
@@ -612,7 +698,7 @@ class KiroLibraryPanel(
         fun label(f: Folder?) = f?.let { organizer.pathOf(it.id) } ?: "(no folder)"
         JBPopupFactory.getInstance().createPopupChooserBuilder(targets)
             .setTitle("Move to")
-            .setRenderer(SimpleListCellRenderer.create("") { label(it) })
+            .setRenderer(SimpleListCellRenderer.create { l, v, _ -> l.text = label(v) })
             .setNamerForFiltering { label(it) }
             .setItemChosenCallback { chosen(it) }
             .createPopup()
@@ -663,7 +749,7 @@ class KiroLibraryPanel(
 
     private fun open(path: Path) {
         val vf = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(path) ?: return
-        FileEditorManager.getInstance(project).openFile(vf, true)
+        OpenFileDescriptor(project, vf).navigate(true)
     }
 
 }

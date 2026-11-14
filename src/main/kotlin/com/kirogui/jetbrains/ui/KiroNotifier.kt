@@ -27,6 +27,16 @@ object KiroNotifier {
             .notify(project)
     }
 
+    /** A job of a chat that isn't on screen needs attention; Kiro hears about it once that chat is opened again. */
+    fun jobEvent(project: Project, summary: String) {
+        val group = NotificationGroupManager.getInstance().getNotificationGroup("Kiro") ?: return
+        group.createNotification(summary, "From another Kiro chat. Open that chat to let Kiro continue.", NotificationType.INFORMATION)
+            .addAction(NotificationAction.createSimple("Open Kiro") {
+                ToolWindowManager.getInstance(project).getToolWindow("Kiro")?.activate(null)
+            })
+            .notify(project)
+    }
+
     /** The IDE window is in front and the Kiro tool window is open, so the reply is already in view. */
     private fun watching(project: Project): Boolean =
         WindowManager.getInstance().getFrame(project)?.isActive == true &&

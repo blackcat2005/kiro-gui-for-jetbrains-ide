@@ -239,6 +239,24 @@ class KiroResources(private val workspace: Path?, private val home: Path) {
         return writeNew(requireRoot(scope).resolve("steering/$name.md"), "---\n$front---\n\n# $name\n\n")
     }
 
+    /** Writes the steering file that tells Kiro how to use this plugin's IDE tools (always included). */
+    fun installToolGuidance(scope: Scope): Path =
+        writeNew(requireRoot(scope).resolve("steering/${com.kirogui.jetbrains.jobs.ToolGuidance.FILE_NAME}.md"), com.kirogui.jetbrains.jobs.ToolGuidance.CONTENT)
+
+    /**
+     * Keeps the guidance file in place without the user asking: writes it when missing, refreshes an older copy this
+     * plugin wrote, and never touches a file the user edited (no marker). Returns true when it wrote something.
+     */
+    fun ensureToolGuidance(scope: Scope, createIfMissing: Boolean = true): Boolean {
+        val tools = com.kirogui.jetbrains.jobs.ToolGuidance
+        val file = (root(scope) ?: return false).resolve("steering/${tools.FILE_NAME}.md")
+        if (!file.exists() && !createIfMissing) return false
+        if (file.exists() && !tools.isOutdatedCopy(file.readSafe())) return false
+        Files.createDirectories(file.parent)
+        file.toFile().writeText(tools.CONTENT)
+        return true
+    }
+
     fun createSpec(name: String, bugfix: Boolean): Path {
         require(SKILL_NAME.matches(name)) { "Spec names use lowercase letters, digits and hyphens only." }
         val dir = requireRoot(Scope.WORKSPACE).resolve("specs/$name")

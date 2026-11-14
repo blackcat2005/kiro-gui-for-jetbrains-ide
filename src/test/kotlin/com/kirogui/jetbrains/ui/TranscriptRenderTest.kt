@@ -96,11 +96,15 @@ class TranscriptRenderTest {
         paint(sample(), light, Color.WHITE, "transcript-light.png")
         paint(sample(), dark, Color(0x2B, 0x2D, 0x30), "transcript-dark.png")
         paint(emptyList(), light, Color.WHITE, "transcript-empty.png")
+        val everything = com.kirogui.jetbrains.jobs.ToolShowcase.ALL.flatMap { it.tools }.toSet()
+        val withTools = light.copy(tools = com.kirogui.jetbrains.jobs.ToolShowcase.available(everything), guidance = true)
+        paint(emptyList(), withTools, Color.WHITE, "transcript-empty-tools.png")
+        paint(emptyList(), dark.copy(tools = withTools.tools, guidance = false), Color(0x2B, 0x2D, 0x30), "transcript-empty-tools-dark.png")
 
         val html = TranscriptHtml.render(sample(), light, linker)
         assertTrue(html.contains("href=\"copy:4\""), "copy link points at the agent block index")
         assertTrue(html.contains("href=\"copycode:4:0\"") && html.contains("href=\"copycode:4:2\""), "each code block has a Copy link")
-        assertTrue(html.contains("bgcolor=\"#EAECEF\"") && !html.contains("<pre>"), "code is in a shaded cell, no raw <pre>")
+        assertTrue(html.contains("<tt>") && html.contains("bgcolor=\"#${light.border}\"") && !html.contains("<pre>"), "code is in a framed cell, no raw <pre>")
         assertTrue(html.contains("<font color=\"#0033B3\">class</font>"), "kotlin keyword is coloured")
         assertTrue(html.contains("kirofile:"), "file names are links")
         assertTrue(html.contains("<table border=\"1\" bordercolor="), "markdown tables get borders")
@@ -108,10 +112,10 @@ class TranscriptRenderTest {
     }
 
     @Test
-    fun `empty chat offers starters and the chat font is applied`() {
+    fun `the chat font is applied, and the empty chat has no starter chips`() {
         val styled = light.copy(fontFamily = "Inter", fontSize = 15)
         val html = TranscriptHtml.render(emptyList(), styled, linker)
-        TranscriptHtml.SUGGESTIONS.indices.forEach { assertTrue(html.contains("href=\"suggest:$it\""), "starter $it") }
+        assertTrue(!html.contains("suggest:") && !html.contains("What can I help with"))
         assertTrue(html.contains("font-family: \"Inter\"") && html.contains("font-size: 15pt"), "font rule in the stylesheet")
         assertTrue(!TranscriptHtml.render(emptyList(), light, linker).contains("margin: 8px; font"), "no font rule by default")
     }

@@ -35,6 +35,14 @@ fun promptContent(text: String, images: List<PromptImage>): JsonArray = buildJso
     })
 }
 
+/** An MCP server reached over HTTP, as `session/new` and `session/load` take it. */
+fun httpMcpServer(name: String, url: String): JsonObject = buildJsonObject {
+    put("type", "http")
+    put("name", name)
+    put("url", url)
+    put("headers", JsonArray(emptyList()))
+}
+
 /**
  * Typed Agent Client Protocol client (client side of `kiro-cli acp`).
  * Knows nothing about the IDE: streams, file access and permission UI are injected.
@@ -45,6 +53,11 @@ class AcpClient(
     private val files: FileAccess,
     private val permissions: PermissionHandler,
     private val listener: (AcpEvent) -> Unit,
+    /**
+     * Like [listener] but also told which session an event belongs to (null: none named). When set it is used
+     * instead, so several chats can share the process.
+     */
+    private val sessionListener: ((String?, AcpEvent) -> Unit)? = null,
 ) : AutoCloseable {
 
     private val connection = JsonRpcConnection(input, output, object : JsonRpcConnection.Handler {
@@ -60,7 +73,8 @@ class AcpClient(
         }
 
         override fun onClosed(cause: Throwable?) {
-            listener(AcpEvent.Closed(cause?.message))
+            val closed = AcpEvent.Closed(cause?.message)
+            sessionListener?.invoke(null, closed) ?: listener(closed)
         }
     })
 
@@ -76,11 +90,21 @@ class AcpClient(
     @Volatile
     var startTimeoutSeconds: Long = 120
 
+    private fun emit(params: JsonObject, event: AcpEvent) {
+        val sessionListener = sessionListener
+        if (sessionListener != null) sessionListener(params["sessionId"]?.jsonPrimitive?.contentOrNull, event) else listener(event)
+    }
+
     private fun foreign(params: JsonObject): Boolean {
         val active = activeSession ?: return false
         val sid = params["sessionId"]?.jsonPrimitive?.contentOrNull ?: return false
         return sid != active
     }
+
+    /** The agent said in `initialize` that it can connect to MCP servers over HTTP. */
+    @Volatile
+    var supportsHttpMcp: Boolean = false
+        private set
 
     fun start() = connection.start()
 
@@ -97,22 +121,23 @@ class AcpClient(
             put("title", "Kiro GUI for JetBrains")
             put("version", "0.1.3")
         })
-    }).get(startTimeoutSeconds, TimeUnit.SECONDS)
+    }).get(startTimeoutSeconds, TimeUnit.SECONDS).also { supportsHttpMcp = AcpParse.httpMcp(it) }
 
-    fun newSession(cwd: String): SessionInfo {
+    /** [mcpServers] are extra MCP servers for this session only (the IDE's own tools). */
+    fun newSession(cwd: String, mcpServers: JsonArray = JsonArray(emptyList())): SessionInfo {
         val result = connection.request("session/new", buildJsonObject {
             put("cwd", cwd)
-            put("mcpServers", JsonArray(emptyList()))
+            put("mcpServers", mcpServers)
         }).get(startTimeoutSeconds, TimeUnit.SECONDS).jsonObject
         return parseSession(result, result.str("sessionId") ?: error("session/new returned no sessionId"))
     }
 
     /** Reloads a stored session. Kiro replays the history as `session/update` events before this returns. */
-    fun loadSession(sessionId: String, cwd: String): SessionInfo {
+    fun loadSession(sessionId: String, cwd: String, mcpServers: JsonArray = JsonArray(emptyList())): SessionInfo {
         val result = connection.request("session/load", buildJsonObject {
             put("sessionId", sessionId)
             put("cwd", cwd)
-            put("mcpServers", JsonArray(emptyList()))
+            put("mcpServers", mcpServers)
         }).get(startTimeoutSeconds, TimeUnit.SECONDS)
         return parseSession(result as? JsonObject ?: JsonObject(emptyMap()), sessionId)
     }
@@ -156,6 +181,14 @@ class AcpClient(
         }
     }
 
+    fun setConfigOption(sessionId: String, configId: String, value: String) {
+        connection.request("session/set_config_option", buildJsonObject {
+            put("sessionId", sessionId)
+            put("configId", configId)
+            put("value", value)
+        }).get(15, TimeUnit.SECONDS)
+    }
+
     /** Completes with the stop reason (`end_turn`, `cancelled`, ...) when the turn finishes. */
     fun prompt(sessionId: String, text: String, images: List<PromptImage> = emptyList()): CompletableFuture<String> =
         connection.request("session/prompt", buildJsonObject {
@@ -163,12 +196,31 @@ class AcpClient(
             put("prompt", promptContent(text, images))
         }).thenApply { it.jsonObject["stopReason"]?.jsonPrimitive?.contentOrNull ?: "unknown" }
 
+    /** Summarises the conversation to free context (kiro-cli 3.x `_kiro/session/compact`; typing `/compact` does not do it). */
+    fun compact(sessionId: String) {
+        connection.request("_kiro/session/compact", buildJsonObject { put("sessionId", sessionId) }).get(120, TimeUnit.SECONDS)
+    }
+
+    /** Ends a session so its MCP connections go away (kiro-cli 3.x lists `close` among its session capabilities). */
+    fun closeSession(sessionId: String) {
+        connection.request("session/close", buildJsonObject { put("sessionId", sessionId) }).get(10, TimeUnit.SECONDS)
+    }
+
     fun cancel(sessionId: String) {
         connection.notify("session/cancel", buildJsonObject { put("sessionId", sessionId) })
     }
 
     /** Plan credits for the account (Kiro's `/usage`). Null when the command fails or has no credit figures. */
     fun usage(sessionId: String): PlanUsage? {
+        // The v3 engine has its own method (same `data` shape); v2 only knows the slash command below.
+        val direct = try {
+            connection.request("_kiro/account/getUsage", buildJsonObject { put("sessionId", sessionId) }).get(20, TimeUnit.SECONDS) as? JsonObject
+        } catch (e: Exception) {
+            null
+        }
+        direct?.takeIf { it["success"]?.jsonPrimitive?.booleanOrNull != false }?.let { d ->
+            (d["data"] as? JsonObject)?.let { data -> PlanUsage.parse(data)?.let { return it } }
+        }
         val result = connection.request("_kiro.dev/commands/execute", buildJsonObject {
             put("sessionId", sessionId)
             put("command", buildJsonObject {
@@ -207,7 +259,7 @@ class AcpClient(
         val tool = params["toolCall"] as? JsonObject
         val title = tool?.str("title") ?: "Tool call"
         val chosen = try {
-            permissions.request(PermissionRequest(title, options, tool?.get("rawInput") as? JsonObject)).get()
+            permissions.request(PermissionRequest(title, options, tool?.get("rawInput") as? JsonObject, params.str("sessionId"))).get()
         } catch (_: Exception) {
             null
         }
@@ -235,17 +287,18 @@ class AcpClient(
             )
             "tool_call" -> AcpEvent.ToolCall(
                 update.str("toolCallId") ?: "", update.str("title") ?: "Tool call",
-                update.str("kind"), update.str("status"),
+                update.str("kind"), update.str("status"), update.locations(),
             )
             "tool_call_update" -> AcpEvent.ToolCallUpdate(
-                update.str("toolCallId") ?: "", update.str("title"), update.str("status"),
+                update.str("toolCallId") ?: "", update.str("title"), update.str("status"), update.locations(),
             )
             "plan" -> AcpEvent.Plan(update["entries"]?.jsonArray?.mapNotNull { it.jsonObject.str("content") } ?: emptyList())
             "session_info_update" -> AcpParse.sessionInfo(update) ?: AcpEvent.Other(type)
             "available_commands_update" -> AcpEvent.Commands(AcpParse.commands(update))
+            "config_option_update" -> AcpParse.configUpdate(update) ?: AcpEvent.Other(type)
             else -> AcpEvent.Other(type ?: "unknown")
         }
-        listener(event)
+        emit(params, event)
     }
 
     private fun handleCommands(params: JsonObject) {
@@ -256,7 +309,7 @@ class AcpClient(
                 ?.mapNotNull { sub -> sub.jsonPrimitive.contentOrNull } ?: emptyList()
             SlashCommand(o.str("name") ?: "", o.str("description") ?: "", subs)
         } ?: return
-        listener(AcpEvent.Commands(commands))
+        emit(params, AcpEvent.Commands(commands))
     }
 
     private fun handleMetadata(params: JsonObject) {
@@ -264,7 +317,7 @@ class AcpClient(
         val credits = (params["meteringUsage"] as? JsonArray)
             ?.mapNotNull { it.jsonObject["value"]?.jsonPrimitive?.doubleOrNull }
             ?.takeIf { it.isNotEmpty() }?.sum()
-        listener(AcpEvent.Metadata(params["contextUsagePercentage"]?.jsonPrimitive?.doubleOrNull, credits))
+        emit(params, AcpEvent.Metadata(params["contextUsagePercentage"]?.jsonPrimitive?.doubleOrNull, credits))
     }
 
     private fun JsonObject?.choices(listKey: String, idKey: String): List<Choice> =
@@ -277,6 +330,9 @@ class AcpClient(
     override fun close() = connection.close()
 
     private fun JsonObject.str(key: String): String? = this[key]?.takeUnless { it is JsonNull }?.jsonPrimitive?.contentOrNull
+
+    private fun JsonObject.locations(): List<String> =
+        (this["locations"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.str("path") } ?: emptyList()
 
     private fun JsonObject.contentText(): String =
         this["content"]?.jsonObject?.str("text") ?: ""

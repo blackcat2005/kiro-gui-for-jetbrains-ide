@@ -4,12 +4,15 @@ import com.kirogui.jetbrains.kiro.FileLinker
 import java.util.Objects
 
 sealed interface ChatBlock {
-    class User(val text: String, val attachments: List<Attachment> = emptyList()) : ChatBlock
+    /** [time] is when it happened (0 = unknown, e.g. replayed history); shown above the message. */
+    class User(val text: String, val attachments: List<Attachment> = emptyList(), val time: Long = System.currentTimeMillis()) : ChatBlock
 
-    class Agent(val text: StringBuilder = StringBuilder()) : ChatBlock {
+    class Agent(val text: StringBuilder = StringBuilder(), val time: Long = System.currentTimeMillis()) : ChatBlock {
         // Rendering markdown + highlighting is the costly part and finished answers never change, so keep the result.
         internal var cachedHtml: String? = null
         internal var cacheKey: Int = 0
+        internal var cachedWebHtml: String? = null
+        internal var webCacheKey: Int = 0
     }
 
     /** One tool invocation; [status] follows ACP: pending / in_progress / completed / failed. */
@@ -30,10 +33,20 @@ data class Palette(
     /** Optional chat font (CSS family name and point size); null / 0 leave the editor kit's default. */
     val fontFamily: String? = null,
     val fontSize: Int = 0,
+    /** The editor's monospace font for code; null leaves the generic one. */
+    val codeFont: String? = null,
     /** Row backgrounds in diffs: added, removed, hunk header. */
     val diffAdd: String = "DDF1E0",
     val diffDel: String = "F9DEDE",
     val diffHunk: String = "E4E8F5",
+    /** Hairline around cards and code blocks. */
+    val border: String = "D5D8DE",
+    /** Page background. */
+    val bg: String = "FFFFFF",
+    /** What Kiro can do with the IDE's tools; shown on the empty chat only. */
+    val tools: List<com.kirogui.jetbrains.jobs.ToolCard> = emptyList(),
+    /** Is the steering file about those tools installed? null: don't say (the tools are off, or the chat isn't empty). */
+    val guidance: Boolean? = null,
 )
 
 /**
@@ -41,16 +54,22 @@ data class Palette(
  * rather than modern CSS. Colours are embedded on every render, which makes theme changes apply immediately.
  */
 object TranscriptHtml {
+    private const val STAMP_GAP_MS = 120_000L
+
+    /** The small time label above messages; off by request. */
+    const val SHOW_TIME = false
 
     /** [linker] turns file names in answers into `kirofile:` links; [linkVersion] changes when its answers might. */
     fun render(blocks: List<ChatBlock>, p: Palette, linker: FileLinker? = null, linkVersion: Int = 0): String {
         val sb = StringBuilder()
         sb.append("<html><head><style>")
-        sb.append("body { color: #${p.fg}; margin: 8px;${font(p)} }")
+        sb.append("body { color: #${p.fg}; margin: 12px;${font(p)} }")
         sb.append("p { margin-top: 0; margin-bottom: 6px; }")
         sb.append("a { color: #${p.accent}; }")
         sb.append("pre { margin: 0; }")
-        sb.append("code { font-family: monospace; color: #${p.syntax.function}; }")
+        val mono = p.codeFont?.takeIf { it.isNotBlank() }?.let { "\"${it.replace("\"", "")}\", monospace" } ?: "monospace"
+        sb.append("code { font-family: $mono; color: #${p.syntax.function}; }")
+        sb.append("tt { font-family: $mono; }")
         sb.append("li { margin-bottom: 2px; }")
         sb.append("h1 { color: #${p.accent}; margin-top: 8px; margin-bottom: 4px; }")
         sb.append("h2 { color: #${p.accent}; margin-top: 8px; margin-bottom: 4px; }")
@@ -61,28 +80,26 @@ object TranscriptHtml {
         sb.append("table { border-color: #${p.muted}; }")
         sb.append("</style></head><body>")
         if (blocks.isEmpty()) sb.append(welcome(p))
+        var lastStamp = 0L
         blocks.forEachIndexed { i, block ->
+            // The time is shown when it has moved on, not on every message of one exchange.
+            val time = when (block) { is ChatBlock.User -> block.time; is ChatBlock.Agent -> block.time; else -> 0L }
+            val showTime = time > 0 && (lastStamp == 0L || time - lastStamp >= STAMP_GAP_MS)
+            if (showTime) lastStamp = time
             when (block) {
-                is ChatBlock.User -> sb.append(user(block, p))
-                is ChatBlock.Agent -> sb.append(agent(i, block, p, linker, linkVersion))
+                is ChatBlock.User -> sb.append(user(block, p, showTime))
+                is ChatBlock.Agent -> sb.append(agent(i, block, p, linker, linkVersion, showTime))
                 is ChatBlock.Tool -> sb.append(tool(block, p))
                 is ChatBlock.Note -> sb.append(note(block, p))
             }
             // Consecutive tool rows sit together; everything else gets breathing room.
             val next = blocks.getOrNull(i + 1)
-            if (!(block is ChatBlock.Tool && next is ChatBlock.Tool)) sb.append(spacer(10))
+            // The rail already pads its own rows, so between two rail rows a spacer would cut the line.
+            if (!(onRail(block) && next != null && onRail(next))) sb.append(spacer(if (block is ChatBlock.Agent || block is ChatBlock.User) 8 else 6))
         }
         sb.append("</body></html>")
         return sb.toString()
     }
-
-    /** Quick starters on the empty chat: the label is shown, a click puts the prompt into the input box. */
-    val SUGGESTIONS = listOf(
-        "Explain this project" to "Give me a quick tour of this project: what it does, how it is laid out and where to start reading.",
-        "Find bugs in my changes" to "Review my uncommitted changes and point out bugs, risky spots and anything missing.",
-        "Write tests" to "Suggest and write tests for the code I am working on.",
-        "Summarize recent commits" to "Summarize what changed in the last few commits and why it matters.",
-    )
 
     private fun font(p: Palette): String = buildString {
         p.fontFamily?.takeIf { it.isNotBlank() }?.let { append(" font-family: \"").append(it.replace("\"", "")).append("\";") }
@@ -90,28 +107,91 @@ object TranscriptHtml {
     }
 
     private fun welcome(p: Palette): String {
-        val chips = SUGGESTIONS.indices.joinToString("") { i ->
-            "<table cellpadding=\"6\" cellspacing=\"0\"><tr><td bgcolor=\"#${p.card}\">" +
-                "<a href=\"suggest:$i\"><font color=\"#${p.accent}\">&#10022;&nbsp; ${MarkdownHtml.escape(SUGGESTIONS[i].first)}</font></a>" +
-                "</td></tr></table>" + spacer(4)
-        }
-        return "<table width=\"100%\" cellpadding=\"14\" cellspacing=\"0\"><tr><td>" +
-            "<font size=\"+2\" color=\"#${p.accent}\"><b>&#10022; Hi, I'm Kiro</b></font><br>" +
-            "<font size=\"+1\">What shall we build today?</font><br><br>" +
-            chips + "<br><br>" +
-            "<font color=\"#${p.muted}\">" +
+        return spacer(16) + toolCards(p) +
+            "<table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr><td align=\"center\"><font size=\"-1\" color=\"#${p.muted}\">" +
             "Enter sends &middot; Shift+Enter adds a line &middot; <b>/</b> commands &middot; <b>@</b> files and skills<br>" +
-            "Select code in the editor and press Ctrl+Alt+K to attach it. Long pastes become chips too.<br>" +
-            "File names in answers open with Ctrl+click. You review every diff before Kiro changes a file." +
-            "</font></td></tr></table>"
+            "Ctrl+Alt+K attaches the selected code. Long pastes become chips. File names open with Ctrl+click.<br>" +
+            "You review every diff before Kiro changes a file.</font></td></tr></table>"
     }
 
-    private fun user(b: ChatBlock.User, p: Palette): String {
-        val text = if (b.text.isBlank()) "" else "<br><font size=\"1\">&nbsp;</font><br>${MarkdownHtml.escape(b.text)}"
-        val cards = b.attachments.joinToString("") { spacer(6) + attachmentCard(it, p) }
-        return "<table width=\"100%\" cellpadding=\"8\" cellspacing=\"0\"><tr><td bgcolor=\"#${p.card}\">" +
-            "<font color=\"#${p.accent}\"><b>You</b></font>$text$cards</td></tr></table>"
+    /** "What Kiro can do in your IDE": one card per kind of tool; a click puts a sample prompt into the input box. */
+    private fun toolCards(p: Palette): String {
+        if (p.tools.isEmpty()) return ""
+        // Swing's HTML has no rounded corners, flex or grid: a table of two columns. The cells of a row share a height and
+        // cellspacing is the gap between them, which nested tables can't give.
+        fun cell(i: Int, card: com.kirogui.jetbrains.jobs.ToolCard) =
+            "<td width=\"50%\" valign=\"top\" bgcolor=\"#${p.card}\">" +
+                "<a href=\"tool:$i\"><font color=\"#${p.accent}\"><b>${MarkdownHtml.escape(card.title)}</b></font></a><br>" +
+                "<font color=\"#${p.fg}\">${MarkdownHtml.escape(card.blurb)}</font><br>" +
+                "<font size=\"-2\" face=\"monospaced\" color=\"#${p.muted}\">${card.tools.joinToString(" &middot; ") { MarkdownHtml.escape(it) }}</font></td>"
+        val cards = "<table width=\"100%\" cellpadding=\"10\" cellspacing=\"6\">" + p.tools.withIndex().chunked(2).joinToString("") { row ->
+            "<tr>" + row.joinToString("") { (i, card) -> cell(i, card) } + (if (row.size == 1) "<td width=\"50%\"></td>" else "") + "</tr>"
+        } + "</table>"
+        return "<table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr><td align=\"center\">" +
+            "<font color=\"#${p.muted}\"><b>WHAT KIRO CAN DO IN YOUR IDE</b></font><br>" +
+            "<font size=\"-1\" color=\"#${p.muted}\">Click one to try it</font></td></tr></table>" + spacer(8) +
+            guidanceBanner(p) + cards + spacer(10)
     }
+
+    /** The call to action: Kiro only uses the tools well once its steering file says so; one click installs it. */
+    private fun guidanceBanner(p: Palette): String {
+        val installed = p.guidance ?: return ""
+        val body = if (installed) {
+            "<font color=\"#${p.ok}\"><b>&#10003; Kiro has been told to use these tools.</b></font><br>" +
+                "<font size=\"-1\" color=\"#${p.muted}\">The steering file is installed and kept up to date, so it still applies after Kiro compacts a chat.</font>"
+        } else {
+            "<a href=\"guidance:install\"><font color=\"#${p.accent}\"><b>Install Kiro guidance for all Kiro GUI tools</b></font></a><br>" +
+                "<font color=\"#${p.fg}\">Kiro doesn't know about these tools yet. This adds a short, always-on steering file so it uses them " +
+                "(and keeps using them after a compaction).</font>"
+        }
+        return "<table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr><td bgcolor=\"#${p.accent}\" width=\"3\"></td><td>" +
+            "<table width=\"100%\" cellpadding=\"1\" cellspacing=\"0\"><tr><td bgcolor=\"#${p.border}\"><table width=\"100%\" cellpadding=\"10\" cellspacing=\"0\"><tr><td bgcolor=\"#${p.card}\">$body</td></tr></table></td></tr></table></td></tr></table>" + spacer(10)
+    }
+
+    /** Your message: a quiet card with a hairline border, no label (like Claude for VS Code). */
+    private fun user(b: ChatBlock.User, p: Palette, showTime: Boolean): String {
+        val text = if (b.text.isBlank()) "" else MarkdownHtml.escape(b.text)
+        val cards = b.attachments.joinToString("") { spacer(6) + attachmentCard(it, p) }
+        return stamp(if (showTime) b.time else 0, p) +
+            "<table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr><td width=\"4\" bgcolor=\"#${p.accent}\"></td>" +
+            "<td><table width=\"100%\" cellpadding=\"10\" cellspacing=\"0\"><tr><td bgcolor=\"#${p.card}\">$text$cards</td></tr></table></td></tr></table>"
+    }
+
+    /** The time, small and muted at the right, above a message. */
+    private fun stamp(time: Long, p: Palette): String =
+        if (!SHOW_TIME || time <= 0) "" else "<table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr><td align=\"right\">" +
+            "<font size=\"-2\" color=\"#${p.muted}\">${java.text.SimpleDateFormat("h:mm a", java.util.Locale.US).format(java.util.Date(time))}</font>" +
+            "</td></tr></table>" + spacer(3)
+
+    /** Answers, tool calls and job news sit on the timeline; your messages and plain notes do not. */
+    private fun onRail(b: ChatBlock): Boolean = when (b) {
+        is ChatBlock.Agent, is ChatBlock.Tool -> true
+        is ChatBlock.Note -> b.text.startsWith("⚙")
+        is ChatBlock.User -> false
+    }
+
+    /**
+     * A row on the timeline: a dot in the left gutter, a one-pixel line in [rail] colour running the full height of
+     * the row (so the dots are joined), and the content beside it.
+     */
+    private fun timeline(dotColor: String, inner: String, rail: String): String {
+        // Swing HTML can't overlay a dot on a line, so both are drawn into one background image of the gutter (one
+        // bitmap, so a scaled display moves them together; see RailImages). The inner table keeps the cell at least as
+        // tall as the dot.
+        val image = RailImages.rail(dotColor, rail)
+        return "<table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr>" +
+            "<td width=\"20\" valign=\"top\" style=\"background-image: url($image); background-repeat: repeat-y\">" +
+            "<table width=\"20\" cellpadding=\"0\" cellspacing=\"0\"><tr><td width=\"20\" height=\"14\"></td></tr></table></td>" +
+            "<td valign=\"top\">$inner${spacer(4)}</td></tr></table>"
+    }
+
+    private fun dot(color: String) = color
+
+    /** A one-pixel outline in [Palette.border] around a [bg] filled cell: Swing's HTML has no border-radius or border. */
+    private fun framed(bg: String, p: Palette, pad: Int, inner: String): String =
+        "<table width=\"100%\" cellpadding=\"1\" cellspacing=\"0\"><tr><td bgcolor=\"#${p.border}\">" +
+            "<table width=\"100%\" cellpadding=\"$pad\" cellspacing=\"0\"><tr><td bgcolor=\"#$bg\">$inner</td></tr></table>" +
+            "</td></tr></table>"
 
     /** A compact card under the message: a file name, or the first lines of a snippet with a count of the rest. */
     private fun attachmentCard(a: Attachment, p: Palette): String {
@@ -143,19 +223,18 @@ object TranscriptHtml {
             .replace("\n", "<br>")
             .replace("<br> ", "<br>&nbsp;")
 
-    private fun agent(index: Int, b: ChatBlock.Agent, p: Palette, linker: FileLinker?, linkVersion: Int): String {
-        val key = Objects.hash(b.text.length, p, linkVersion, index, linker != null)
+    private fun agent(index: Int, b: ChatBlock.Agent, p: Palette, linker: FileLinker?, linkVersion: Int, showTime: Boolean): String {
+        val key = Objects.hash(b.text.length, p, linkVersion, index, linker != null, showTime)
         b.cachedHtml?.let { if (b.cacheKey == key) return it }
 
         var md = MarkdownHtml.render(b.text.toString(), linker)
         md = md.replace("<table>", "<table border=\"1\" bordercolor=\"#${p.muted}\" cellpadding=\"5\" cellspacing=\"0\">")
         val body = codeBlocks(md, p, index)
-        val html = "<table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr>" +
-            "<td width=\"3\" bgcolor=\"#${p.accent}\"><font size=\"1\">&nbsp;</font></td><td width=\"10\"><font size=\"1\">&nbsp;</font></td><td>" +
-            "<font color=\"#${p.accent}\"><b>&#10022; Kiro</b></font>&nbsp;&nbsp;" +
-            "<a href=\"copy:$index\"><font size=\"-1\">Copy</font></a>" +
-            "<table cellpadding=\"0\" cellspacing=\"0\"><tr><td height=\"4\"></td></tr></table>" +
-            body + "</td></tr></table>"
+        val html = stamp(if (showTime) b.time else 0, p) + timeline(
+            dot(p.accent),
+            body + "<font size=\"-2\"><a href=\"copy:$index\"><font color=\"#${p.muted}\">Copy</font></a></font>",
+            p.border,
+        )
         b.cachedHtml = html
         b.cacheKey = key
         return html
@@ -167,12 +246,24 @@ object TranscriptHtml {
             "failed" -> "&#10007;" to p.err
             else -> "&hellip;" to p.muted
         }
-        return "&nbsp;&nbsp;<font color=\"#$color\">&#9679;</font>&nbsp;<font color=\"#${p.muted}\">${MarkdownHtml.escape(b.title)}</font>&nbsp;" +
-            "<font color=\"#$color\"><b>$mark</b></font><br>"
+        // "@kirogui/bg_run" is the server's name for the tool; the person reading doesn't need it.
+        val title = b.title.replace(Regex("@[A-Za-z0-9_-]+/"), "")
+        return timeline(dot(color), "<font color=\"#${p.muted}\">${MarkdownHtml.escape(title)}</font>&nbsp;<font color=\"#$color\">$mark</font>", p.border)
     }
 
-    private fun note(b: ChatBlock.Note, p: Palette) =
-        "<font color=\"#${p.muted}\"><i>${MarkdownHtml.escape(b.text)}</i></font>"
+    private val exitCode = Regex("exit code (-?\\d+)")
+
+    private fun note(b: ChatBlock.Note, p: Palette): String {
+        if (!b.text.startsWith("\u2699")) return "<font color=\"#${p.muted}\"><i>${MarkdownHtml.escape(b.text).replace("\n", "<br>")}</i></font>"
+        // News of a background job or the debugger: a row like a tool call, green when it went well, red when not.
+        val code = exitCode.find(b.text)?.groupValues?.get(1)?.toIntOrNull()
+        val color = when {
+            code != null -> if (code == 0) p.ok else p.err
+            b.text.contains("failed", true) -> p.err
+            else -> p.muted
+        }
+        return timeline(dot(color), "<font color=\"#${p.muted}\">${MarkdownHtml.escape(b.text.removePrefix("\u2699").trim())}</font>", p.border)
+    }
 
     private val codeBlock = Regex("<pre><code(?: class=\"language-([^\"]*)\")?[^>]*>(.*?)</code></pre>", RegexOption.DOT_MATCHES_ALL)
 
@@ -188,10 +279,11 @@ object TranscriptHtml {
             val raw = unescape(m.groupValues[2]).trimEnd('\n')
             val index = n++
             if (CodeHighlighter.isDiff(lang)) return@replace diffBlock(raw, p, blockIndex, index)
-            val header = "<font size=\"-2\" color=\"#${p.muted}\">${(lang ?: "code").uppercase()}</font>&nbsp;&nbsp;" +
-                "<a href=\"copycode:$blockIndex:$index\"><font size=\"-2\">Copy</font></a><br>"
-            "<table width=\"100%\" cellpadding=\"8\" cellspacing=\"0\"><tr><td bgcolor=\"#${p.code}\">" +
-                header + "<font color=\"#${p.fg}\"><tt>${codeHtml(raw, lang, p)}</tt></font></td></tr></table>" + spacer(6)
+            val header = "<table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr>" +
+                "<td><font size=\"-2\" color=\"#${p.muted}\">${(lang ?: "code").lowercase()}</font></td>" +
+                "<td align=\"right\"><a href=\"copycode:$blockIndex:$index\"><font size=\"-2\" color=\"#${p.muted}\">Copy</font></a></td>" +
+                "</tr></table>" + spacer(4)
+            framed(p.bg, p, 8, header + "<font color=\"#${p.fg}\"><tt>${codeHtml(raw, lang, p)}</tt></font>") + spacer(8)
         }
     }
 
@@ -215,15 +307,14 @@ object TranscriptHtml {
                 DiffText.Kind.ADD -> Triple(p.diffAdd, p.syntax.added, "+")
                 DiffText.Kind.DEL -> Triple(p.diffDel, p.syntax.removed, "&minus;")
                 DiffText.Kind.HUNK -> Triple(p.diffHunk, p.syntax.keyword, "")
-                DiffText.Kind.HEADER -> Triple(p.code, p.muted, "")
-                DiffText.Kind.CONTEXT -> Triple(p.code, p.fg, "")
+                DiffText.Kind.HEADER -> Triple(p.bg, p.muted, "")
+                DiffText.Kind.CONTEXT -> Triple(p.bg, p.fg, "")
             }
             val text = codeHtml(l.text, null, p).ifEmpty { "&nbsp;" }
             "<tr><td width=\"14\" valign=\"top\" bgcolor=\"#$bg\"><font color=\"#$fg\"><tt><b>$mark</b></tt></font></td>" +
                 "<td bgcolor=\"#$bg\"><font color=\"#${if (l.kind == DiffText.Kind.CONTEXT) p.fg else fg}\"><tt>$text</tt></font></td></tr>"
         }
-        return "<table width=\"100%\" cellpadding=\"8\" cellspacing=\"0\"><tr><td bgcolor=\"#${p.code}\">$header" +
-            "<table width=\"100%\" cellpadding=\"2\" cellspacing=\"0\">$rows</table></td></tr></table>" + spacer(6)
+        return framed(p.bg, p, 8, header + "<table width=\"100%\" cellpadding=\"2\" cellspacing=\"0\">$rows</table>") + spacer(8)
     }
 
     /** commonmark escapes `& < > "` inside code; the highlighter wants the raw text. */

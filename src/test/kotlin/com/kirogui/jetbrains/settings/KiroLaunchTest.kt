@@ -2,6 +2,7 @@ package com.kirogui.jetbrains.settings
 
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class KiroLaunchTest {
 
@@ -66,5 +67,33 @@ class KiroLaunchTest {
     @Test
     fun `blank shell runs directly`() {
         assertEquals(listOf("kiro-cli", "acp"), KiroLaunch.command("kiro-cli", "", "  "))
+        assertEquals("", KiroLaunch.compatibleArgs("--agent x --trust-all-tools", "v3"), "v3 refuses every v2-only flag")
+        assertEquals("--agent x --trust-all-tools", KiroLaunch.compatibleArgs("--agent x --trust-all-tools", "v2"))
+        assertEquals("--agent-engine v3", KiroLaunch.compatibleArgs("--trust-all-tools --agent-engine v3", ""), "engine named in the arguments")
+        assertEquals(listOf("kiro-cli", "acp", "--agent", "x"), KiroLaunch.command("other", "kiro-cli acp --agent x"), "a full command is used as typed")
+        assertEquals(listOf("C:/k/kiro-cli.exe", "acp", "--agent", "x"), KiroLaunch.command("other", "C:/k/kiro-cli.exe --agent x"), "acp is added when missing")
+    }
+
+    @Test
+    fun `v3 drops v2-only flags with their values and keeps the rest, in a full command too`() {
+        assertEquals(
+            "kiro-cli acp --verbose",
+            KiroLaunch.compatibleArgs("kiro-cli acp --agent \"my agent\" -a --model=auto --trust-tools fs_read,fs_write --effort high --verbose", "v3"),
+        )
+        assertEquals("--verbose", KiroLaunch.compatibleArgs("--verbose --agent-engine v3 --agent x".replace(" --agent-engine v3", ""), "v3"))
+        assertEquals("--agent x -a", KiroLaunch.compatibleArgs("--agent x -a", ""), "blank engine: kiro-cli itself picks v2 for these flags")
+    }
+
+    @Test
+    fun `the plugin can tell what the v2-only flags asked for`() {
+        val f = KiroLaunch.v2Flags("--agent my-agent --model=claude-haiku-4.5 --trust-all-tools --trust-tools fs_read --effort high --verbose")
+        assertEquals("my-agent", f.agent)
+        assertEquals("claude-haiku-4.5", f.model)
+        assertTrue(f.trustAll)
+        assertEquals(listOf("--trust-tools fs_read", "--effort high"), f.dropped)
+        assertTrue(KiroLaunch.v2Flags("-a").trustAll)
+        assertTrue(!KiroLaunch.v2Flags("--verbose").any)
+        assertTrue(KiroLaunch.isV3("", "v3") && KiroLaunch.isV3("--agent-engine v3", "") && KiroLaunch.isV3("--agent-engine=v3", ""))
+        assertTrue(!KiroLaunch.isV3("--trust-all-tools", "") && !KiroLaunch.isV3("", "v2"))
     }
 }

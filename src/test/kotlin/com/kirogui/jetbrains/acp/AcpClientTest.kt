@@ -102,6 +102,39 @@ class AcpClientTest {
     }
 
     @Test
+    fun `events of several sessions arrive with their session id`() {
+        val agent = FakeAgent()
+        val seen = CopyOnWriteArrayList<Pair<String?, AcpEvent>>()
+        val client = AcpClient(
+            input = agent.clientIn,
+            output = agent.clientOutput(),
+            files = object : FileAccess {
+                override fun readText(path: String) = ""
+                override fun writeText(path: String, content: String) {}
+            },
+            permissions = PermissionHandler { CompletableFuture.completedFuture(null) },
+            listener = { },
+            sessionListener = { sid, event -> seen.add(sid to event) },
+        )
+        agent.readLoop { msg ->
+            if (msg["method"]?.jsonPrimitive?.content == "initialize") {
+                agent.send("""{"jsonrpc":"2.0","id":${msg["id"]!!.jsonPrimitive.content},"result":{"protocolVersion":1}}""")
+            }
+        }
+        client.start()
+        client.initialize()
+        agent.send("""{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"A","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"from A"}}}}""")
+        agent.send("""{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"B","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"from B"}}}}""")
+        agent.send("""{"jsonrpc":"2.0","method":"_kiro.dev/metadata","params":{"sessionId":"B","contextUsagePercentage":9.0}}""")
+        val deadline = System.currentTimeMillis() + 3000
+        while (seen.size < 3 && System.currentTimeMillis() < deadline) Thread.sleep(20)
+        assertEquals(listOf("A", "B", "B"), seen.map { it.first })
+        assertEquals(AcpEvent.AgentText("from B"), seen[1].second)
+        agent.toClient.close() // the reader thread ends with its input
+        client.close()
+    }
+
+    @Test
     fun `sliceLines is 1-based`() {
         assertEquals("b\nc", sliceLines("a\nb\nc\nd", 2, 2))
         assertEquals("c\nd", sliceLines("a\nb\nc\nd", 3, null))

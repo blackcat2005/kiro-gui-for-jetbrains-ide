@@ -39,8 +39,12 @@ data class KiroSession(
     val metaFile: Path,
     val hasContent: Boolean,
 ) {
-    /** Only the legacy store can be reloaded through `session/load` by the ACP server. */
-    val resumable: Boolean get() = store == SessionStore.LEGACY
+    /**
+     * Checked against kiro-cli 3.2: the v3 engine reloads both stores (a legacy session is replayed with its tool calls),
+     * the v2 engine only the legacy one ("Session not found" for a v3 session). The engine in use is not known up front,
+     * so the chat tries `session/load` for every session and a v3 session on v2 falls back to read-only.
+     */
+    val needsV3: Boolean get() = store == SessionStore.V3
 
     /** Kiro's own name for it: its title, else the first thing the user said. */
     val kiroName: String

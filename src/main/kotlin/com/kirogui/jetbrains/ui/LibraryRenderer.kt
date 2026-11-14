@@ -57,6 +57,9 @@ class LibraryTreeRenderer(
     /** Id of the session open in the chat, shown in bold with a dot. */
     private val current: () -> String? = { null },
 ) : TreeCellRenderer {
+    /** The list is already limited to this project, so its name on every row is noise. */
+    var showProject: Boolean = true
+
 
     private val rowBorder = JBUI.Borders.empty(3, 6)
     private val sectionBorder = JBUI.Borders.empty(10, 6, 3, 6) // extra air above each section header
@@ -84,11 +87,13 @@ class LibraryTreeRenderer(
     ): Component {
         val node = (value as? DefaultMutableTreeNode)?.userObject
         title.clear(); detail.clear(); detail.isVisible = false; iconLabel.icon = null
+        room = (tree.visibleRect.width - (((tree.getPathForRow(row)?.pathCount ?: 1) - 1) * JBUI.scale(20)) - JBUI.scale(52)).coerceAtLeast(JBUI.scale(80))
+        fontOf = tree.font
 
         val bg = if (selected) UIUtil.getTreeSelectionBackground(tree.hasFocus()) else tree.background ?: UIUtil.getTreeBackground()
         val fg = if (selected) UIUtil.getTreeSelectionForeground(tree.hasFocus()) else UIUtil.getTreeForeground()
         val quiet = if (selected) fg else UIUtil.getContextHelpForeground()
-        val accent = if (selected) fg else JBUI.CurrentTheme.Link.Foreground.ENABLED
+        val accent = if (selected) fg else KiroChatPanel.ACCENT
         this.row.background = bg
         this.row.isOpaque = true
         this.row.border = if (node is LibNode.Section) sectionBorder else rowBorder
@@ -101,7 +106,8 @@ class LibraryTreeRenderer(
         when (node) {
             is LibNode.Section -> {
                 iconLabel.icon = node.kind.icon
-                title.append(node.kind.title, bold)
+                // An empty section recedes.
+                title.append(node.kind.title, if (node.count == 0) small else bold)
                 title.append("  ${node.count}", small)
             }
             is LibNode.Sess -> session(node.node, plain, bold, small, badge)
@@ -180,16 +186,15 @@ class LibraryTreeRenderer(
                 iconLabel.icon = if (s.parentId != null) KiroIcons.SessionChild else KiroIcons.Session
                 if (s.id == current()) {
                     title.append("● ", badge)
-                    title.append(truncate(n.name, 80), bold)
+                    title.append(fit(n.name, bold), bold)
                 } else {
-                    title.append(truncate(n.name, 80), plain)
+                    title.append(fit(n.name, plain), plain)
                 }
 
                 val project = s.cwd?.replace('\\', '/')?.trimEnd('/')?.substringAfterLast('/').orEmpty()
-                val parts = listOf(project, RelativeTime.format(s.updatedAt ?: s.createdAt, now())).filter { it.isNotEmpty() }
+                val parts = listOf(if (showProject) project else "", RelativeTime.format(s.updatedAt ?: s.createdAt, now())).filter { it.isNotEmpty() }
                 detail.append(parts.joinToString("  ·  "), small)
-                s.reason?.takeIf { it.isNotBlank() }?.let { detail.append("   $it", badge) }
-                if (!s.resumable) detail.append("   view only", small)
+                s.reason?.takeIf { it.isNotBlank() }?.let { detail.append("   $it", small) }
                 detail.isVisible = true
             }
         }
@@ -203,6 +208,21 @@ class LibraryTreeRenderer(
     }
 
     private fun attrs(color: Color, style: Int = SimpleTextAttributes.STYLE_PLAIN) = SimpleTextAttributes(style, color)
+
+    /** Pixels left for a title in the current row, and the font it is drawn in. */
+    private var room = Int.MAX_VALUE
+    private var fontOf: java.awt.Font? = null
+
+    /** [text] cut with an ellipsis so it fits the row instead of being clipped mid-letter. */
+    private fun fit(text: String, attrs: SimpleTextAttributes): String {
+        val base = fontOf ?: return truncate(text, 80)
+        val font = base.deriveFont(if (attrs.style and SimpleTextAttributes.STYLE_BOLD != 0) java.awt.Font.BOLD else java.awt.Font.PLAIN)
+        val metrics = title.getFontMetrics(font)
+        if (metrics.stringWidth(text) <= room) return text
+        var end = text.length
+        while (end > 1 && metrics.stringWidth(text.substring(0, end) + "…") > room) end--
+        return text.substring(0, end).trimEnd() + "…"
+    }
 
     private fun truncate(s: String, max: Int) = if (s.length <= max) s else s.take(max - 1) + "…"
 }

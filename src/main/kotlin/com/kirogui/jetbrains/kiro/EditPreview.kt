@@ -14,13 +14,18 @@ data class FileChange(val path: Path, val before: String, val after: String, val
 /**
  * Works out what a Kiro file-write tool call is about to do, from the arguments Kiro sends in its
  * permission request (Kiro writes the file itself, so this is the only moment to review it).
- * Understands the `fs_write` commands create / strReplace / insert / append; anything else returns null.
+ * Understands the v2 `fs_write` commands create / strReplace / insert / append, and the v3 tools, which carry no
+ * `command`: `str_replace` {path, oldStr, newStr, replace_all} and `fs_write` {path, text}. Anything else returns null.
  */
 object EditPreview {
 
     fun compute(raw: JsonObject?, cwd: Path, readExisting: (Path) -> String?): FileChange? {
         raw ?: return null
-        val command = raw.str("command") ?: return null
+        val command = raw.str("command") ?: when {
+            raw["oldStr"] != null -> "strReplace"
+            raw["text"] != null || raw["content"] != null || raw["fileText"] != null -> "create"
+            else -> return null
+        }
         val rawPath = raw.str("path") ?: return null
         val path = try {
             Paths.get(rawPath).let { if (it.isAbsolute) it else cwd.resolve(it) }
@@ -32,7 +37,7 @@ object EditPreview {
 
         return when (command) {
             "create" -> {
-                val content = (raw.str("content") ?: raw.str("fileText"))?.normalize() ?: return null
+                val content = (raw.str("content") ?: raw.str("fileText") ?: raw.str("text"))?.normalize() ?: return null
                 FileChange(path, existing ?: "", content, isNewFile = existing == null)
             }
             "strReplace" -> {
@@ -40,7 +45,10 @@ object EditPreview {
                 val old = raw.str("oldStr")?.normalize() ?: return null
                 val idx = before.indexOf(old)
                 if (idx < 0) return null
-                FileChange(path, before, before.substring(0, idx) + (newStr ?: "") + before.substring(idx + old.length), false)
+                val all = raw["replace_all"]?.jsonPrimitive?.contentOrNull == "true" && old.isNotEmpty()
+                val after = if (all) before.replace(old, newStr ?: "")
+                else before.substring(0, idx) + (newStr ?: "") + before.substring(idx + old.length)
+                FileChange(path, before, after, false)
             }
             "insert" -> {
                 val before = existing ?: return null

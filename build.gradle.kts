@@ -42,6 +42,11 @@ intellijPlatform {
         }
         changeNotes = """
             <ul>
+                <li>0.1.3: background jobs and the debugger for Kiro: it can start slow commands (Run tool window) and debug sessions without blocking the chat, and is told when a command ends or the debugger stops (Settings → Tools → Kiro → IDE tools)</li>
+                <li>0.1.3: several chats at once (+ in the tool window title, one tab per chat, each with its own conversation and background jobs); jobs are shown in a panel under the chat instead of a separate tab; new setting "Shell for Kiro's commands" (Git Bash, Command Prompt, WSL, custom) for places where PowerShell is blocked</li>
+                <li>0.1.3: test_run: Kiro runs all of the project's tests (or a file, folder or single test) with the IDE's test runner, is woken with a report of the failures (test, file:line, assertion, frames in your code) or the compile errors, and can rerun only the failed tests</li>
+                <li>0.1.3: Jobs panel: running and ended jobs with live output; stop, show console, attach output to the chat. Kiro can read run and debug consoles (run_logs), and each debugger stop includes the program's last output lines</li>
+                <li>0.1.3: fixed: files Kiro edited kept showing the old text in an open editor (kiro-cli 3.x sends lower-case drive letters on Windows); the IDE now also re-reads files after Kiro's tools and commands finish</li>
                 <li>0.1.3: works with kiro-cli 3.x as well as 2.x: the model list and model switching, context %, credits per turn, slash commands and warnings such as a failing MCP server now appear on both engines; new "Agent engine" setting</li>
                 <li>0.1.3: Library lists your agents and MCP servers and shows which are on (the agent in use is marked; a server that is disabled or replaced by the workspace entry shows as off)</li>
                 <li>0.1.3: new "Start timeout" setting (default 2 minutes) for slow kiro-cli starts; start-up errors show what kiro-cli printed; restarting also stops the processes kiro-cli started; start-up timings are written to idea.log</li>
@@ -63,6 +68,21 @@ intellijPlatform {
     }
     publishing {
         token = providers.environmentVariable("PUBLISH_TOKEN")
+    }
+
+    // ./gradlew verifyPlugin: checks the built plugin against real IDE builds (downloads them, nothing is installed).
+    pluginVerification {
+        ides {
+            select {
+                types = listOf(
+                    org.jetbrains.intellij.platform.gradle.IntelliJPlatformType.IntellijIdeaCommunity,
+                    org.jetbrains.intellij.platform.gradle.IntelliJPlatformType.IntellijIdeaUltimate,
+                )
+                channels = listOf(org.jetbrains.intellij.platform.gradle.models.ProductRelease.Channel.RELEASE)
+                sinceBuild = "251"
+                untilBuild = "263.*"
+            }
+        }
     }
 }
 

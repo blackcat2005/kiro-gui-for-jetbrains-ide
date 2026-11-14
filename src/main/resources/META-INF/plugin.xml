@@ -5,7 +5,7 @@
     <description><![CDATA[
         <p>A chat window for <a href="https://kiro.dev">Kiro</a> inside JetBrains IDEs. The plugin starts your local
         <code>kiro-cli acp</code> and talks to it over the Agent Client Protocol (JSON-RPC over stdio), so there is no
-        embedded browser and no local server.</p>
+        embedded browser.</p>
 
         <h3>Chat</h3>
         <ul>
@@ -22,6 +22,19 @@
             <li>The open editor file is attached automatically (can be turned off); <code>@</code> picks project files</li>
             <li>Long pastes become compact chips instead of filling the input</li>
             <li><code>/</code> suggests Kiro's slash commands and your skills</li>
+        </ul>
+
+        <h3>Background jobs and the debugger</h3>
+        <ul>
+            <li>Kiro can start slow commands (builds, tests, servers) that run in the Run tool window while you keep chatting</li>
+            <li>Kiro can debug your run configurations: breakpoints, conditions, tracepoints, stack, variables, evaluate, step</li>
+            <li>When a command ends or the debugger stops, the plugin tells Kiro once the chat is idle, and Kiro carries on</li>
+            <li>Kiro can run the project's tests with the IDE's test runner and gets a report of what failed, where and why (or the compile errors), then reruns just the failures</li>
+            <li>Kiro can read the console of any run or debug session, yours included (logs, stack traces, server output)</li>
+            <li>A shared Jobs panel (beside or under the chats) lists the running jobs with live output: stop them, open their console, attach output to the chat</li>
+            <li>Choose the shell for Kiro's commands (Git Bash, Command Prompt, WSL, …) if PowerShell is blocked</li>
+            <li>Several chats at once as tabs, with one shared list of sessions and library on the left</li>
+            <li>The tools are served to kiro-cli on 127.0.0.1 only, one secret URL per chat; they can be switched off</li>
         </ul>
 
         <h3>Library</h3>
@@ -58,6 +71,7 @@
         <toolWindow id="Kiro" anchor="right" icon="/icons/kiro.svg"
                     factoryClass="com.kirogui.jetbrains.ui.KiroToolWindowFactory"/>
         <notificationGroup id="Kiro" displayType="BALLOON" isLogByDefault="true"/>
+        <postStartupActivity implementation="com.kirogui.jetbrains.jobs.JobsStartup"/>
         <applicationConfigurable parentId="tools" id="com.kirogui.jetbrains.settings"
                                  displayName="Kiro"
                                  instance="com.kirogui.jetbrains.settings.KiroConfigurable"/>

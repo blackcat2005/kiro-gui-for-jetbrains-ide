@@ -2,7 +2,8 @@
 
 A JetBrains IDE plugin that gives [Kiro](https://kiro.dev) a native chat GUI. It talks to
 `kiro-cli acp` over the [Agent Client Protocol](https://agentclientprotocol.com) (JSON-RPC over stdio),
-so it needs no embedded browser and no local HTTP server.
+so it needs no embedded browser. The only thing it listens on is a loopback-only MCP endpoint that gives Kiro the
+IDE's tools (background commands and the debugger, see below); it can be turned off.
 
 Requires IDE build 251+ (2025.1 and newer) and an installed, signed-in `kiro-cli` (2.x or 3.x).
 
@@ -43,6 +44,77 @@ Requires IDE build 251+ (2025.1 and newer) and an installed, signed-in `kiro-cli
     `"disabled": true`, or a workspace entry with the same name replaces it. The list is read from the files, so it
     shows what is configured, not whether the server connected; a server that fails to connect is reported in the chat.
 
+## Background jobs and the debugger
+
+Kiro can hand slow work to the IDE and keep chatting. The plugin serves a few MCP tools to each chat (on
+`127.0.0.1`, one secret URL per chat, so a call knows which chat it came from):
+
+- **`bg_run`** starts a shell command (PowerShell on Windows, bash elsewhere) and returns at once. It runs in the
+  Run tool window, where you can watch and stop it. `job_status` shows a job's output, `job_stop` ends it.
+- **`debug_start`** runs one of your run configurations under the IDE debugger. `debug_breakpoint` adds line
+  breakpoints, conditional ones and tracepoints (log a value without stopping). While the program is paused,
+  `debug_state`, `debug_eval` and `debug_control` (step, resume, pause, stop) read and drive it. They also work on a
+  debug session you started yourself. Each stop also shows the last lines the program printed.
+  **`debug_run_until`** does the whole start in one call (breakpoints, run, first stop with stack and variables), which
+  saves most of the round trips; `debug_control` with `action=wait` waits for the next stop.
+- **`debug_task`** hands an open-ended debugging hunt to a separate Kiro session on a cheaper model (a haiku one by
+  default, or the model set in Settings → Kiro). That helper has only the IDE tools (it cannot edit files or run
+  shell commands) and the main chat gets its short report as a normal job result. Every call a helper makes costs the
+  helper's rate, not the main model's.
+- **Keeping the tools in use**: the plugin keeps an always-on steering file (`~/.kiro/steering/kirogui-ide-tools.md`) up
+  to date (only if it is an older copy of its own text), which survives Kiro's compaction. When Kiro compacts a chat
+  (`/compact` in the chat input calls the real compaction) the next prompt carries a two-line reminder.
+- **`test_run`** runs tests with the IDE's own test runner, whatever the project uses (JUnit, TestNG, Gradle, pytest,
+  Jest, …), picked the way the editor's "Run tests" actions pick it. With no target it runs all of the project's
+  tests; it can also run a file, a folder, the single test at `file:line`, or a test run configuration. When the run
+  ends Kiro gets a report rather than raw output: how many passed and failed and, for each failure, the test, its file
+  and line, the assertion message and the stack frames in the project's own code. If the build fails it gets the
+  compile errors instead. `rerun_failed` runs only the tests that failed in an earlier run, so the loop is: run all,
+  fix, rerun the failures, run all again.
+- **`run_logs`** reads the console of anything run or debugged in the IDE since the project opened, including runs
+  you started yourself: application logs, server output, stack traces. It can pick out lines containing a text.
+  Lines are numbered from the start of each run, and the plugin remembers per chat how far Kiro has read, so
+  `new_only` (also on `job_status`) returns only what was printed since. A debugger stop likewise shows only console
+  lines Kiro hasn't seen yet.
+
+The **Jobs** panel (the ⚙ Run-icon button in the tool window title, beside the chat when the window is wide and under it when narrow) lists these jobs from every chat with their state, how long they have
+run and their live output. It opens by itself when Kiro starts a job, and the chat's "N background jobs running" line
+shows or hides it. From there you can stop a job, bring up its console in the Run or Debug tool window (double-click
+does the same), attach its output to your next message, or clear the ended ones.
+
+**Which shell?** Kiro's `bg_run` commands run in PowerShell on Windows and bash elsewhere. If PowerShell is blocked where
+you work, pick another one in Settings → Tools → Kiro → "Shell for Kiro's commands": Git Bash (found in the usual Git for
+Windows folders, or next to `git` on the PATH), Command Prompt, PowerShell 7, WSL, or your own template such as
+`C:/Tools/bash.exe -c {cmd}`. This covers the commands Kiro starts through the plugin; commands Kiro runs with its own
+built-in shell tool are up to kiro-cli.
+
+## Several chats at once
+
+The Kiro tool window is one workspace: the **sessions and library** list on the left (shared by every chat), the chats as
+tabs in the middle, the **jobs** on the right (underneath when the window is narrow). Three buttons in the tool window
+title show or hide them: **+** (new chat), the session list, the jobs. A tab carries the name the list shows for its session (your rename, else the title Kiro gave it, else the first question).
+
+The **+** opens another chat tab. Each tab has its own conversation with Kiro (they share one
+kiro-cli process, and kiro-cli runs sessions side by side), so you can ask one chat something long while you carry on in
+another. A tab shows a spinner while its chat is working. A session is opened in the tab that already has it, and when
+you pick one from the list while the current chat is busy it opens in a new tab instead of asking to stop. Right-click a
+session for "Open in new chat tab". "New chat" in the list or the **+** reuses the current tab if it is still empty. The last tab can't be closed, and closing a busy one asks first. Restarting kiro-cli
+from one chat ends the sessions of the others, which then offer to reconnect.
+
+Nothing blocks while these run. When a command ends, or the debugger stops at a breakpoint in a session Kiro is
+driving, the plugin queues a short note for that chat. It sends the note to Kiro as soon as the chat is idle, and the
+transcript shows it as a ⚙ line. Kiro then reads the exit code and output, or the location, stack and variables, and
+carries on. If you step or resume in the debugger yourself, the following stops are yours and Kiro is not woken until
+it acts again. A note for a chat that isn't open waits until you open it, and a balloon tells you about it. After you
+press Stop, notes wait until you send your next message. A note that Kiro no longer needs is dropped instead of
+interrupting it: news of a job ending when Kiro has since started the same command again, or of a debug run that
+simply finished when Kiro has since started something newer.
+
+This exists because kiro-cli can't do it on its own. Its `run_in_background` either still waits for the command (when
+the client runs commands) or loses the result, it doesn't support MCP Tasks, and nothing wakes an idle agent. A second
+prompt sent mid-turn cancels the turn, so the plugin sends all prompts for a chat, yours and the IDE's, strictly one
+after another.
+
 ## Settings (Settings -> Tools -> Kiro)
 
 - **kiro-cli path, arguments, environment**: arguments go after `acp` (for example `--agent my-agent`); one
@@ -53,6 +125,7 @@ Requires IDE build 251+ (2025.1 and newer) and an installed, signed-in `kiro-cli
   something misbehaves.
 - **Start timeout** (default 120 s): how long to wait for kiro-cli to start and to open a session. Raise it where
   security software slows kiro-cli down.
+- **IDE tools**: give Kiro background commands and the debugger (on by default). Applies to chats opened afterwards.
 - Chat font and size, attaching the open file, and notifications.
 
 ## kiro-cli 3.x

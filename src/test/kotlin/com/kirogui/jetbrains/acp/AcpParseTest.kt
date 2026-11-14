@@ -109,4 +109,20 @@ class AcpParseTest {
         assertEquals(listOf("/context-gatherer", "/already"), commands.map { it.name })
         assertEquals("Investigates the codebase", commands.first().description)
     }
+
+    @Test
+    fun `v3 sends the model list after session new as a config_option_update`() {
+        val update = obj(
+            """{"sessionUpdate":"config_option_update","configOptions":[
+                 {"type":"select","id":"mode","name":"Mode","category":"mode","currentValue":"vibe","options":[{"value":"vibe","name":"Default"}]},
+                 {"type":"select","id":"model","name":"Model","category":"model","currentValue":"auto","options":[
+                   {"value":"auto","name":"auto","description":"Models chosen by task"},{"value":"claude-haiku-4.5","name":"claude-haiku-4.5"}]},
+                 {"type":"select","id":"autopilot","name":"Autopilot","currentValue":"on","options":[{"value":"on","name":"on"},{"value":"off","name":"off"}]}]}""",
+        )
+        val event = AcpParse.configUpdate(update)!!
+        assertEquals(listOf("auto", "claude-haiku-4.5"), event.models.map { it.id })
+        assertEquals("auto", event.currentModelId)
+        assertTrue(event.efforts.isEmpty())
+        assertNull(AcpParse.configUpdate(obj("""{"configOptions":[{"id":"autopilot","options":[{"value":"on","name":"on"}]}]}""")), "no models, no efforts: nothing to show")
+    }
 }

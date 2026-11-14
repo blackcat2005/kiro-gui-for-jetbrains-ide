@@ -57,8 +57,8 @@ class SessionsTest {
         assertEquals("Fix the login bug please", all.getValue("a1").kiroName, "untitled falls back to first prompt")
         assertEquals("Named", all.getValue("a2").title)
         assertFalse(all.getValue("empty").hasContent)
-        assertTrue(all.getValue("a1").resumable)
-        assertFalse(all.getValue("sess_main").resumable)
+        assertTrue(all.getValue("sess_main").needsV3)
+        assertFalse(all.getValue("a1").needsV3)
         assertEquals("tangent" to "sess_main", all.getValue("sess_tan").let { it.reason to it.parentId })
         assertEquals("D:\\pose_camera", all.getValue("sess_main").cwd)
     }

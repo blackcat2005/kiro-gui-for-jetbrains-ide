@@ -16,7 +16,6 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.vfs.LocalFileSystem
-import com.intellij.ui.SimpleListCellRenderer
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextField
@@ -592,7 +591,7 @@ class KiroLibraryPanel(
     private fun showNewMenu() {
         val kinds = SectionKind.entries
         JBPopupFactory.getInstance().createPopupChooserBuilder(kinds)
-            .setRenderer(SimpleListCellRenderer.create { l, v, _ -> l.text = v?.let { newLabel(it) } ?: "" })
+            .setRenderer(listRenderer<SectionKind> { l, v -> l.append(v?.let { newLabel(it) } ?: "") })
             .setItemChosenCallback { kind -> guarded { create(kind) } }
             .createPopup()
             .showUnderneathOf(toolbarComponent)
@@ -698,7 +697,7 @@ class KiroLibraryPanel(
         fun label(f: Folder?) = f?.let { organizer.pathOf(it.id) } ?: "(no folder)"
         JBPopupFactory.getInstance().createPopupChooserBuilder(targets)
             .setTitle("Move to")
-            .setRenderer(SimpleListCellRenderer.create { l, v, _ -> l.text = label(v) })
+            .setRenderer(listRenderer<Folder?> { l, v -> l.append(label(v)) })
             .setNamerForFiltering { label(it) }
             .setItemChosenCallback { chosen(it) }
             .createPopup()

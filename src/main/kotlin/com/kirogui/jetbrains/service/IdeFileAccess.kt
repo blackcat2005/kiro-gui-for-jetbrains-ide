@@ -3,7 +3,6 @@ package com.kirogui.jetbrains.service
 import com.intellij.ide.SaveAndSyncHandler
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
-import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
@@ -18,7 +17,7 @@ class IdeFileAccess(private val project: Project) : FileAccess {
 
     override fun readText(path: String): String {
         val p = IdePaths.normalize(path)
-        return runReadAction {
+        return readNow {
             val vf = LocalFileSystem.getInstance().findFileByPath(p)
             val doc = vf?.let { FileDocumentManager.getInstance().getCachedDocument(it) }
             doc?.text ?: File(p).readText()

@@ -29,7 +29,6 @@ import com.intellij.ui.ColorUtil
 import com.intellij.ui.JBColor
 import com.intellij.ui.ColoredListCellRenderer
 import com.intellij.ui.RoundedLineBorder
-import com.intellij.ui.SimpleListCellRenderer
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
@@ -512,7 +511,7 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
         })
         JBPopupFactory.getInstance().createPopupChooserBuilder(entries)
             .setTitle("Attach")
-            .setRenderer(SimpleListCellRenderer.create<AttachChoice> { label, value, _ -> value?.let { label.text = it.label; label.icon = it.icon } })
+            .setRenderer(listRenderer<AttachChoice> { label, value -> value?.let { label.append(it.label); label.icon = it.icon } })
             .setItemChosenCallback { it.run() }
             .createPopup()
             .showUnderneathOf(attachButton)
@@ -1233,7 +1232,7 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
         return cardsCache
     }
 
-    private fun choiceRenderer(label: String) = SimpleListCellRenderer.create<Choice> { l, v, _ -> l.text = v?.name ?: label }
+    private fun choiceRenderer(label: String) = listRenderer<Choice> { l, v -> l.append(v?.name ?: label) }
 
     companion object {
         const val USAGE_MIN_INTERVAL_MS = 10_000L

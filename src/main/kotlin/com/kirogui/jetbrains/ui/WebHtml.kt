@@ -96,22 +96,29 @@ details.event summary::-webkit-details-marker{display:none}
 """.trimIndent()
     }
 
-    fun render(blocks: List<ChatBlock>, p: Palette, linker: FileLinker? = null, linkVersion: Int = 0): String {
-        val sb = StringBuilder()
-        if (blocks.isEmpty()) sb.append(welcome(p))
+    fun render(blocks: List<ChatBlock>, p: Palette, linker: FileLinker? = null, linkVersion: Int = 0): String =
+        renderRows(blocks, p, linker, linkVersion).joinToString("")
+
+    /**
+     * One HTML string per block (a single row for the welcome screen when there are none). Finished agent rows come from
+     * the block's cache, so the same String instance is returned and the caller can tell "unchanged" with a cheap equals.
+     */
+    fun renderRows(blocks: List<ChatBlock>, p: Palette, linker: FileLinker? = null, linkVersion: Int = 0): List<String> {
+        if (blocks.isEmpty()) return listOf(welcome(p))
+        val rows = ArrayList<String>(blocks.size)
         var lastStamp = 0L
         blocks.forEachIndexed { i, block ->
             val time = when (block) { is ChatBlock.User -> block.time; is ChatBlock.Agent -> block.time; else -> 0L }
             val showTime = time > 0 && (lastStamp == 0L || time - lastStamp >= STAMP_GAP_MS)
             if (showTime) lastStamp = time
-            when (block) {
-                is ChatBlock.User -> sb.append(user(block, p, showTime))
-                is ChatBlock.Agent -> sb.append(agent(i, block, p, linker, linkVersion, showTime))
-                is ChatBlock.Tool -> sb.append(tool(block))
-                is ChatBlock.Note -> sb.append(note(block))
+            rows += when (block) {
+                is ChatBlock.User -> user(block, p, showTime)
+                is ChatBlock.Agent -> agent(i, block, p, linker, linkVersion, showTime)
+                is ChatBlock.Tool -> tool(block)
+                is ChatBlock.Note -> note(block)
             }
         }
-        return sb.toString()
+        return rows
     }
 
     private fun esc(s: String) = MarkdownHtml.escape(s)

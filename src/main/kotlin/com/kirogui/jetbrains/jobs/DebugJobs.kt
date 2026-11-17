@@ -24,7 +24,7 @@ import com.intellij.execution.ui.RunContentDescriptor
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.WriteAction
-import com.intellij.openapi.application.runReadAction
+import com.kirogui.jetbrains.service.readNow
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Key
@@ -262,7 +262,7 @@ class DebugJobs(private val project: Project, private val jobs: JobService) {
                 val env = builder.build(object : ProgramRunner.Callback {
                     override fun processStarted(descriptor: RunContentDescriptor?) {
                         descriptor ?: return
-                        val session = XDebuggerManager.getInstance(project).debugSessions.firstOrNull { runCatching { it.runContentDescriptor }.getOrNull() === descriptor }
+                        val session = XDebuggerManager.getInstance(project).debugSessions.firstOrNull { runCatching { it.debugProcess.processHandler }.getOrNull().let { h -> h != null && h === descriptor.processHandler } }
                         if (session != null) attach(run, session)
                         else descriptor.processHandler?.let { attachOutput(run, it) }
                     }
@@ -722,7 +722,7 @@ class DebugJobs(private val project: Project, private val jobs: JobService) {
     // ---------- debug_exceptions ----------
 
     @Suppress("UNCHECKED_CAST")
-    private fun exceptionBreakpoints(): List<XBreakpoint<*>> = runReadAction {
+    private fun exceptionBreakpoints(): List<XBreakpoint<*>> = readNow {
         val manager = XDebuggerManager.getInstance(project).breakpointManager
         val types = XBreakpointType.EXTENSION_POINT_NAME.extensionList
             .filter { it !is XLineBreakpointType<*> && it.id.contains("exception", ignoreCase = true) }
@@ -807,20 +807,20 @@ class DebugJobs(private val project: Project, private val jobs: JobService) {
      * The names in [expression] that the file declares nowhere (so a condition using them can't be evaluated), with names
      * declared shortly above the line for the message; null when nothing is wrong or the file can't be checked.
      */
-    private fun undeclared(file: VirtualFile, line0: Int, expression: String): Pair<List<String>, List<String>>? = runReadAction {
+    private fun undeclared(file: VirtualFile, line0: Int, expression: String): Pair<List<String>, List<String>>? = readNow {
         val ids = ConditionNames.identifiers(expression)
-        if (ids.isEmpty()) return@runReadAction null
-        val psi: PsiFile = PsiManager.getInstance(project).findFile(file) ?: return@runReadAction null
-        val doc = PsiDocumentManager.getInstance(project).getDocument(psi) ?: return@runReadAction null
-        if (line0 !in 0 until doc.lineCount || doc.textLength > MAX_CHECKED_CHARS) return@runReadAction null
+        if (ids.isEmpty()) return@readNow null
+        val psi: PsiFile = PsiManager.getInstance(project).findFile(file) ?: return@readNow null
+        val doc = PsiDocumentManager.getInstance(project).getDocument(psi) ?: return@readNow null
+        if (line0 !in 0 until doc.lineCount || doc.textLength > MAX_CHECKED_CHARS) return@readNow null
         val declared = HashMap<String, Int>()
         PsiTreeUtil.processElements(psi, PsiElementProcessor { e ->
             if (e is PsiNamedElement && e !is PsiFile) e.name?.let { declared.putIfAbsent(it, doc.getLineNumber(e.textOffset.coerceIn(0, doc.textLength))) }
             true
         })
-        if (declared.isEmpty()) return@runReadAction null // no language support to check against
+        if (declared.isEmpty()) return@readNow null // no language support to check against
         val unknown = ids.filter { it !in declared }
-        if (unknown.isEmpty()) return@runReadAction null
+        if (unknown.isEmpty()) return@readNow null
         val nearby = declared.entries.filter { it.value in (line0 - 25)..line0 && it.key.firstOrNull()?.isLowerCase() == true }
             .sortedByDescending { it.value }.map { it.key }.distinct().take(12)
         unknown to nearby
@@ -832,11 +832,11 @@ class DebugJobs(private val project: Project, private val jobs: JobService) {
         return manager.addLineBreakpoint(t, file.url, line, t.createBreakpointProperties(file, line))
     }
 
-    private fun lineBreakpoints(): List<XLineBreakpoint<*>> = runReadAction {
+    private fun lineBreakpoints(): List<XLineBreakpoint<*>> = readNow {
         XDebuggerManager.getInstance(project).breakpointManager.allBreakpoints.filterIsInstance<XLineBreakpoint<*>>()
     }
 
-    private fun describe(bp: XLineBreakpoint<*>): String = runReadAction {
+    private fun describe(bp: XLineBreakpoint<*>): String = readNow {
         val file = bp.sourcePosition?.file?.let(::relative) ?: bp.presentableFilePath
         val parts = mutableListOf<String>()
         if (!bp.isEnabled) parts.add("disabled")

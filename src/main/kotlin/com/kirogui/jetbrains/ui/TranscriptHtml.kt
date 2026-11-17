@@ -60,10 +60,14 @@ object TranscriptHtml {
     const val SHOW_TIME = false
 
     /** [linker] turns file names in answers into `kirofile:` links; [linkVersion] changes when its answers might. */
-    fun render(blocks: List<ChatBlock>, p: Palette, linker: FileLinker? = null, linkVersion: Int = 0): String {
+    fun render(blocks: List<ChatBlock>, p: Palette, linker: FileLinker? = null, linkVersion: Int = 0): String =
+        page(p, renderRows(blocks, p, linker, linkVersion).joinToString(""), margin = "12px")
+
+    /** The document around [body]: the style sheet and colours. [margin] is the CSS margin of the page. */
+    fun page(p: Palette, body: String, margin: String): String {
         val sb = StringBuilder()
         sb.append("<html><head><style>")
-        sb.append("body { color: #${p.fg}; margin: 12px;${font(p)} }")
+        sb.append("body { color: #${p.fg}; margin: $margin;${font(p)} }")
         sb.append("p { margin-top: 0; margin-bottom: 6px; }")
         sb.append("a { color: #${p.accent}; }")
         sb.append("pre { margin: 0; }")
@@ -79,9 +83,18 @@ object TranscriptHtml {
         sb.append("th { color: #${p.syntax.keyword}; }")
         sb.append("table { border-color: #${p.muted}; }")
         sb.append("</style></head><body>")
-        if (blocks.isEmpty()) sb.append(welcome(p))
+        sb.append(body)
+        sb.append("</body></html>")
+        return sb.toString()
+    }
+
+    /** One HTML fragment per block (the welcome screen as a single fragment when there are none), spacing included. */
+    fun renderRows(blocks: List<ChatBlock>, p: Palette, linker: FileLinker? = null, linkVersion: Int = 0): List<String> {
+        if (blocks.isEmpty()) return listOf(welcome(p))
+        val rows = ArrayList<String>(blocks.size)
         var lastStamp = 0L
         blocks.forEachIndexed { i, block ->
+            val sb = StringBuilder()
             // The time is shown when it has moved on, not on every message of one exchange.
             val time = when (block) { is ChatBlock.User -> block.time; is ChatBlock.Agent -> block.time; else -> 0L }
             val showTime = time > 0 && (lastStamp == 0L || time - lastStamp >= STAMP_GAP_MS)
@@ -96,9 +109,9 @@ object TranscriptHtml {
             val next = blocks.getOrNull(i + 1)
             // The rail already pads its own rows, so between two rail rows a spacer would cut the line.
             if (!(onRail(block) && next != null && onRail(next))) sb.append(spacer(if (block is ChatBlock.Agent || block is ChatBlock.User) 8 else 6))
+            rows += sb.toString()
         }
-        sb.append("</body></html>")
-        return sb.toString()
+        return rows
     }
 
     private fun font(p: Palette): String = buildString {

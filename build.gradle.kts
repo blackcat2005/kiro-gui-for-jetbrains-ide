@@ -42,6 +42,7 @@ intellijPlatform {
         }
         changeNotes = """
             <ul>
+                <li>0.1.3: smoother chat and start-up: the chat is drawn block by block (only what changed), in the Swing view the HTML is built off the UI thread and hidden chats are not drawn, and the embedded browser is created only when a chat is on screen, so restoring several chats no longer freezes the IDE</li>
                 <li>0.1.3: background jobs and the debugger for Kiro: it can start slow commands (Run tool window) and debug sessions without blocking the chat, and is told when a command ends or the debugger stops (Settings → Tools → Kiro → IDE tools)</li>
                 <li>0.1.3: several chats at once (+ in the tool window title, one tab per chat, each with its own conversation and background jobs); jobs are shown in a panel under the chat instead of a separate tab; new setting "Shell for Kiro's commands" (Git Bash, Command Prompt, WSL, custom) for places where PowerShell is blocked</li>
                 <li>0.1.3: test_run: Kiro runs all of the project's tests (or a file, folder or single test) with the IDE's test runner, is woken with a report of the failures (test, file:line, assertion, frames in your code) or the compile errors, and can rerun only the failed tests</li>
@@ -73,15 +74,11 @@ intellijPlatform {
     // ./gradlew verifyPlugin: checks the built plugin against real IDE builds (downloads them, nothing is installed).
     pluginVerification {
         ides {
-            select {
-                types = listOf(
-                    org.jetbrains.intellij.platform.gradle.IntelliJPlatformType.IntellijIdeaCommunity,
-                    org.jetbrains.intellij.platform.gradle.IntelliJPlatformType.IntellijIdeaUltimate,
-                )
-                channels = listOf(org.jetbrains.intellij.platform.gradle.models.ProductRelease.Channel.RELEASE)
-                sinceBuild = "251"
-                untilBuild = "263.*"
-            }
+            // Pinned to the oldest, a middle and the newest supported line (all already in the Gradle cache) instead of
+            // select{}, which pulled every release in 251..263 for both editions (6+ GB) and failed on flaky downloads.
+            ide(org.jetbrains.intellij.platform.gradle.IntelliJPlatformType.IntellijIdeaCommunity, "2025.1")
+            ide(org.jetbrains.intellij.platform.gradle.IntelliJPlatformType.IntellijIdeaCommunity, "2025.2.6")
+            ide(org.jetbrains.intellij.platform.gradle.IntelliJPlatformType.IntellijIdeaUltimate, "2026.3")
         }
     }
 }

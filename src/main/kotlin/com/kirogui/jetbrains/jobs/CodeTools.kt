@@ -7,7 +7,7 @@ import com.intellij.ide.util.gotoByName.GotoSymbolModel2
 import com.intellij.lang.LanguageStructureViewBuilder
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
-import com.intellij.openapi.application.runReadAction
+import com.kirogui.jetbrains.service.readNow
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.module.ModuleManager
 import com.intellij.openapi.project.DumbService
@@ -149,7 +149,7 @@ class CodeTools(private val project: Project, private val parent: com.intellij.o
 
     // ---------- project layout ----------
 
-    private fun modules(call: McpCall): McpResult = runReadAction {
+    private fun modules(call: McpCall): McpResult = readNow {
         val base = project.basePath ?: "(unknown)"
         val mods = ModuleManager.getInstance(project).modules.sortedBy { it.name }
         val out = StringBuilder("Project: ${project.name}\nRoot: $base\n${mods.size} module(s)\n")
@@ -193,10 +193,10 @@ class CodeTools(private val project: Project, private val parent: com.intellij.o
     private fun structure(call: McpCall): McpResult {
         val path = call.arguments.argString("file") ?: return McpResult("`file` is required.", isError = true)
         return guarded {
-            runReadAction {
-                val psi = psiFile(path) ?: return@runReadAction McpResult("No such file: $path", isError = true)
+            readNow {
+                val psi = psiFile(path) ?: return@readNow McpResult("No such file: $path", isError = true)
                 val builder = LanguageStructureViewBuilder.getInstance().getStructureViewBuilder(psi) as? TreeBasedStructureViewBuilder
-                    ?: return@runReadAction McpResult("The IDE has no structure view for ${psi.name}.", isError = true)
+                    ?: return@readNow McpResult("The IDE has no structure view for ${psi.name}.", isError = true)
                 val model = builder.createStructureViewModel(null)
                 try {
                     val out = StringBuilder(rel(psi.virtualFile)).append('\n')
@@ -291,8 +291,8 @@ class CodeTools(private val project: Project, private val parent: com.intellij.o
         val limit = (call.arguments.argInt("limit") ?: 30).coerceIn(1, 100)
         val symbols = call.arguments.argString("kind")?.lowercase() == "symbol"
         return guarded {
-            runReadAction {
-                val matcher = NameUtil.buildMatcher("*$query", NameUtil.MatchingCaseSensitivity.NONE)
+            readNow {
+                val matcher = NameUtil.buildMatcher("*$query").build()
                 val model = if (symbols) GotoSymbolModel2(project, parent) else GotoClassModel2(project)
                 @Suppress("DEPRECATION")
                 val names = model.getNames(false).filter { matcher.matches(it) }.sortedBy { it.length }
@@ -315,7 +315,7 @@ class CodeTools(private val project: Project, private val parent: com.intellij.o
         val limit = (call.arguments.argInt("limit") ?: 40).coerceIn(1, 200)
         val matches = namePattern(pattern)
         val out = ArrayList<String>()
-        runReadAction {
+        readNow {
             ProjectFileIndex.getInstance(project).iterateContent { f ->
                 if (!f.isDirectory && matches(f.name)) out.add(rel(f))
                 out.size < limit
@@ -337,7 +337,7 @@ class CodeTools(private val project: Project, private val parent: com.intellij.o
         val out = ArrayList<String>()
         val deadline = System.currentTimeMillis() + SEARCH_BUDGET_MS
         var cut = false
-        runReadAction {
+        readNow {
             ProjectFileIndex.getInstance(project).iterateContent { f ->
                 if (System.currentTimeMillis() > deadline) {
                     cut = true
@@ -411,11 +411,11 @@ class CodeTools(private val project: Project, private val parent: com.intellij.o
     /** Runs [body] in a read action on the symbol the arguments point at, or explains why there is none. */
     private fun withTarget(call: McpCall, body: (PsiElement) -> McpResult): McpResult {
         if (DumbService.getInstance(project).isDumb) return McpResult("The IDE is still indexing; try again in a moment.", isError = true)
-        return runReadAction {
-            val path = call.arguments.argString("file") ?: return@runReadAction McpResult("`file` is required.", isError = true)
-            val psi = psiFile(path) ?: return@runReadAction McpResult("No such file: $path", isError = true)
+        return readNow {
+            val path = call.arguments.argString("file") ?: return@readNow McpResult("`file` is required.", isError = true)
+            val psi = psiFile(path) ?: return@readNow McpResult("No such file: $path", isError = true)
             val target = targetAt(psi, call.arguments.argInt("line"), call.arguments.argInt("column"), call.arguments.argString("symbol"))
-                ?: return@runReadAction McpResult(
+                ?: return@readNow McpResult(
                     "No symbol found there. Give `line` and the `symbol` name exactly as written, or its `column`.",
                     isError = true,
                 )

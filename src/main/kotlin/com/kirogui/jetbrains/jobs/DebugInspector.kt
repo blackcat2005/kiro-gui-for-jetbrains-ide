@@ -1,6 +1,6 @@
 package com.kirogui.jetbrains.jobs
 
-import com.intellij.openapi.application.runReadAction
+import com.kirogui.jetbrains.service.readNow
 import com.intellij.openapi.editor.colors.TextAttributesKey
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.util.TextRange
@@ -139,7 +139,11 @@ internal object DebugInspector {
                 if (last || out.size >= max) done.complete(Unit)
             }
 
-            override fun tooManyChildren(remaining: Int) {
+            // 251 still declares the one-argument form abstract, so both are implemented (the newer IDEs call the second).
+            @Deprecated("Replaced by the two-argument form")
+            override fun tooManyChildren(remaining: Int) = tooManyChildren(remaining, Runnable {})
+
+            override fun tooManyChildren(remaining: Int, addNextChildren: Runnable) {
                 note.compareAndSet(null, "($remaining more not shown)")
                 done.complete(Unit)
             }
@@ -285,9 +289,9 @@ internal object DebugInspector {
 
     /** Lines around [line] (0-based) with the current one marked. */
     fun sourceLines(file: VirtualFile, line: Int, around: Int): String? = try {
-        runReadAction {
-            val doc = FileDocumentManager.getInstance().getDocument(file) ?: return@runReadAction null
-            if (line !in 0 until doc.lineCount) return@runReadAction null
+        readNow {
+            val doc = FileDocumentManager.getInstance().getDocument(file) ?: return@readNow null
+            if (line !in 0 until doc.lineCount) return@readNow null
             val from = (line - around).coerceAtLeast(0)
             val to = (line + around).coerceAtMost(doc.lineCount - 1)
             (from..to).joinToString("\n") { i ->

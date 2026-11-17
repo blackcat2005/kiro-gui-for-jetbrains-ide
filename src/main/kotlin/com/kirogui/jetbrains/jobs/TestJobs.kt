@@ -23,7 +23,6 @@ import com.intellij.execution.testframework.sm.runner.SMRunnerConsolePropertiesP
 import com.intellij.execution.testframework.sm.runner.SMTRunnerEventsAdapter
 import com.intellij.execution.testframework.sm.runner.SMTRunnerEventsListener
 import com.intellij.execution.testframework.sm.runner.SMTestProxy
-import com.intellij.execution.testframework.sm.runner.states.TestStateInfo
 import com.intellij.execution.testframework.sm.runner.ui.SMTRunnerConsoleView
 import com.intellij.execution.ui.RunContentDescriptor
 import com.intellij.openapi.actionSystem.ActionPlaces
@@ -32,7 +31,7 @@ import com.intellij.openapi.actionSystem.LangDataKeys
 import com.intellij.openapi.actionSystem.impl.SimpleDataContext
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
-import com.intellij.openapi.application.runReadAction
+import com.kirogui.jetbrains.service.readNow
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.module.ModuleUtilCore
@@ -209,6 +208,8 @@ class TestJobs(private val project: Project, private val jobs: JobService) {
                     val building = runs.values.filter { it.job.state == JobState.STARTING }
                     if (building.isNotEmpty()) {
                         val where = (event as? FileMessageEvent)?.filePosition?.let { p ->
+                            // FilePosition.getPath() only exists from 2025.3; getFile() is what 251 has.
+                            @Suppress("DEPRECATION")
                             p.file?.let { "${relative(it.path)}:${p.startLine + 1}: " }
                         }.orEmpty()
                         val text = where + event.message.trim()
@@ -256,7 +257,7 @@ class TestJobs(private val project: Project, private val jobs: JobService) {
         target?.let { pathOf(it) }?.let { LocalFileSystem.getInstance().refreshAndFindFileByPath(IdePaths.normalize(it.path)) }
         // Finding the tests reads PSI and indexes: in a background read action, as the editor's own Run actions do.
         val (settings, title, note) = try {
-            runReadAction { resolve(target, rerun) }
+            readNow { resolve(target, rerun) }
         } catch (e: Fail) {
             return McpResult(e.message ?: "Can't run that.", isError = true)
         } catch (e: Exception) {
@@ -491,7 +492,7 @@ class TestJobs(private val project: Project, private val jobs: JobService) {
                 job.report = head(job) + "\nrun configuration: ${run.settings.name}\nThe run reported no test results (exit code ${exit ?: "?"})." +
                     if (tail.isNotEmpty()) "\nOutput (last lines):\n$tail" else ""
             } else {
-                val collected = runReadAction { collect(root) }
+                val collected = readNow { collect(root) }
                 run.failed = collected.failedTests
                 val t = collected.tally
                 job.summary = TestText.outcome(t, stopped)
@@ -526,9 +527,7 @@ class TestJobs(private val project: Project, private val jobs: JobService) {
 
     private class Collected(val tally: TestTally, val failures: List<TestFailure>, val failedTests: List<SMTestProxy>)
 
-    private fun magnitude(t: SMTestProxy) = t.magnitudeInfo
-
-    private fun failed(t: SMTestProxy) = magnitude(t).let { it == TestStateInfo.Magnitude.FAILED_INDEX || it == TestStateInfo.Magnitude.ERROR_INDEX }
+    private fun failed(t: SMTestProxy) = t.isDefect
 
     private fun tally(root: SMTestProxy): TestTally {
         var passed = 0
@@ -537,10 +536,10 @@ class TestJobs(private val project: Project, private val jobs: JobService) {
         var notRun = 0
         for (t in root.allTests) {
             if (t.isSuite || t.isConfig) continue
-            when (magnitude(t)) {
-                TestStateInfo.Magnitude.PASSED_INDEX, TestStateInfo.Magnitude.COMPLETE_INDEX -> passed++
-                TestStateInfo.Magnitude.FAILED_INDEX, TestStateInfo.Magnitude.ERROR_INDEX -> failed++
-                TestStateInfo.Magnitude.IGNORED_INDEX, TestStateInfo.Magnitude.SKIPPED_INDEX -> ignored++
+            when {
+                t.isDefect -> failed++
+                t.isIgnored -> ignored++
+                t.isPassed -> passed++
                 else -> notRun++
             }
         }

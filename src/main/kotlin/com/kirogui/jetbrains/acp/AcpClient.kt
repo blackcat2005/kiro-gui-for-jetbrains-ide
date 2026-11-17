@@ -69,6 +69,7 @@ class AcpClient(
                 "session/update" -> params?.jsonObject?.let(::handleUpdate)
                 "_kiro.dev/metadata" -> params?.jsonObject?.let(::handleMetadata)
                 "_kiro.dev/commands/available" -> params?.jsonObject?.let(::handleCommands)
+                else -> logUnhandled("notification", method, params)
             }
         }
 
@@ -248,7 +249,21 @@ class AcpClient(
             files.writeText(path, params.str("content") ?: "")
             JsonNull
         }
-        else -> throw JsonRpcException(JsonRpcException.METHOD_NOT_FOUND, "Method not found: $method")
+        else -> {
+            logUnhandled("request", method, params)
+            throw JsonRpcException(JsonRpcException.METHOD_NOT_FOUND, "Method not found: $method")
+        }
+    }
+
+    /**
+     * Diagnostics for messages this client does not understand (for example an MCP server asking the user to sign in).
+     * Everything goes to idea.log at INFO; anything carrying a URL is also logged as a WARN so it is easy to find.
+     */
+    private fun logUnhandled(kind: String, what: String, payload: JsonElement?) {
+        val text = payload?.toString().orEmpty()
+        val shown = if (text.length > 2000) text.take(2000) + "…(${text.length} chars)" else text
+        log.info("Unhandled ACP $kind: $what $shown")
+        if (URL_IN_TEXT.containsMatchIn(text)) log.warn("ACP $kind '$what' carries a URL (maybe a login link): $shown")
     }
 
     private fun requestPermission(params: JsonObject): JsonElement {
@@ -296,7 +311,10 @@ class AcpClient(
             "session_info_update" -> AcpParse.sessionInfo(update) ?: AcpEvent.Other(type)
             "available_commands_update" -> AcpEvent.Commands(AcpParse.commands(update))
             "config_option_update" -> AcpParse.configUpdate(update) ?: AcpEvent.Other(type)
-            else -> AcpEvent.Other(type ?: "unknown")
+            else -> {
+                logUnhandled("session update", type ?: "unknown", update)
+                AcpEvent.Other(type ?: "unknown")
+            }
         }
         emit(params, event)
     }
@@ -339,5 +357,7 @@ class AcpClient(
 
     companion object {
         const val PROTOCOL_VERSION = 1
+        private val log = com.intellij.openapi.diagnostic.Logger.getInstance(AcpClient::class.java)
+        private val URL_IN_TEXT = Regex("https?://[^\\s\"\\\\]+")
     }
 }

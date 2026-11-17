@@ -60,6 +60,7 @@ class LazyTranscript(private val parent: Disposable) : TranscriptView {
     private var inner: TranscriptView? = null
     private var starting = false
     private var latest: Args? = null
+    private var gone = false
 
     override val component: JComponent get() = holder
     override var onLink: (String, Boolean) -> Unit = { _, _ -> }
@@ -69,6 +70,7 @@ class LazyTranscript(private val parent: Disposable) : TranscriptView {
         }
 
     init {
+        Disposer.register(parent) { gone = true }
         holder.addHierarchyListener {
             if (inner == null && !starting && holder.isShowing) {
                 starting = true
@@ -78,7 +80,7 @@ class LazyTranscript(private val parent: Disposable) : TranscriptView {
     }
 
     private fun materialize() {
-        if (Disposer.isDisposed(parent)) return
+        if (gone) return
         val view = TranscriptView.createNow(parent)
         view.onLink = onLink
         inner = view

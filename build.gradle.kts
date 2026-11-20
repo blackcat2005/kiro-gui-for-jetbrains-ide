@@ -42,6 +42,10 @@ intellijPlatform {
         }
         changeNotes = """
             <ul>
+                <li>0.1.4: Kiro's memory (kiro-cli 3.x): choose off, read only or read and write in Settings → Tools → Kiro; the Library has a Memories section where you can read and delete what Kiro remembers</li>
+                <li>0.1.4: sending a message while you are scrolled up in the chat now jumps back to the end to follow the answer</li>
+                <li>0.1.4: fixed the panel failing to start on IDE 2026.3 (NoClassDefFoundError JBCefApp): the embedded-browser plugin is now an optional dependency, and the chat falls back to the simple view when the IDE has no browser</li>
+                <li>0.1.4: new step-by-step user guide (docs/USER_GUIDE.md)</li>
                 <li>0.1.3: smoother chat and start-up: the chat is drawn block by block (only what changed), in the Swing view the HTML is built off the UI thread and hidden chats are not drawn, and the embedded browser is created only when a chat is on screen, so restoring several chats no longer freezes the IDE</li>
                 <li>0.1.3: background jobs and the debugger for Kiro: it can start slow commands (Run tool window) and debug sessions without blocking the chat, and is told when a command ends or the debugger stops (Settings → Tools → Kiro → IDE tools)</li>
                 <li>0.1.3: several chats at once (+ in the tool window title, one tab per chat, each with its own conversation and background jobs); jobs are shown in a panel under the chat instead of a separate tab; new setting "Shell for Kiro's commands" (Git Bash, Command Prompt, WSL, custom) for places where PowerShell is blocked</li>

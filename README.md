@@ -5,6 +5,8 @@ A JetBrains IDE plugin that gives [Kiro](https://kiro.dev) a native chat GUI. It
 so it needs no embedded browser. The only thing it listens on is a loopback-only MCP endpoint that gives Kiro the
 IDE's tools (background commands and the debugger, see below); it can be turned off.
 
+**New here? Start with the [user guide](docs/USER_GUIDE.md)**: install, first chat, and everyday use, step by step.
+
 Requires IDE build 251+ (2025.1 and newer) and an installed, signed-in `kiro-cli` (2.x or 3.x).
 
 ## Features
@@ -43,6 +45,14 @@ Requires IDE build 251+ (2025.1 and newer) and an installed, signed-in `kiro-cli
   - *MCP servers* (`settings/mcp.json`, workspace and global): each shows **on** or **off**. Off means the entry has
     `"disabled": true`, or a workspace entry with the same name replaces it. The list is read from the files, so it
     shows what is configured, not whether the server connected; a server that fails to connect is reported in the chat.
+
+## Memory (kiro-cli 3.x)
+
+Kiro can remember your preferences and facts about a project across chats. Memory is off in Kiro until you choose:
+*Settings → Tools → Kiro → Kiro's memory* offers off, read only, and read and write (optionally letting Kiro save new
+memories by itself). The choice is sent per chat (`session/new` `_meta.kiro.settings.memory`), so the plugin never edits
+Kiro's own settings files. The Library's **Memories** section lists what Kiro remembers (`_kiro/memory/list`); open one
+to read it in full, or delete it. Memories belong to Kiro, so they are shared with `kiro-cli` in a terminal.
 
 ## Background jobs and the debugger
 

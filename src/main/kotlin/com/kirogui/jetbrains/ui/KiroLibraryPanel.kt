@@ -12,6 +12,7 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.DumbAwareAction
+import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.popup.JBPopupFactory
@@ -21,6 +22,10 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextField
 import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.ui.JBUI
+import com.kirogui.jetbrains.acp.Memory
+import com.kirogui.jetbrains.service.KiroAcpService
+import com.kirogui.jetbrains.settings.KiroConfigurable
+import com.kirogui.jetbrains.settings.KiroSettings
 import com.kirogui.jetbrains.kiro.Folder
 import com.kirogui.jetbrains.kiro.AgentInfo
 import com.kirogui.jetbrains.kiro.HookInfo
@@ -94,6 +99,10 @@ class KiroLibraryPanel(
     private fun resources() = KiroResources(project.basePath?.let { Path.of(it) }, Path.of(System.getProperty("user.home")))
 
     private var snapshot: Snapshot? = null
+
+    /** What Kiro remembers; null while unknown (not loaded yet, kiro-cli not running, or no memory on this engine). */
+    private var memories: List<Memory>? = null
+    private var memoriesGeneration = 0
     private var thisProjectOnly = true
     private var hideEmpty = true
     private var expandedKeys: Set<String>? = null // null until the first build; then what the user left open
@@ -278,6 +287,20 @@ class KiroLibraryPanel(
                 onLoaded?.invoke()
             }
         }
+        if (!compact) reloadMemories()
+    }
+
+    /** Asks the running kiro-cli for its memories (apart from the files above: a slow answer must not hold the rest back). */
+    private fun reloadMemories() {
+        val generation = ++memoriesGeneration
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val list = project.getService(KiroAcpService::class.java).memories()
+            ApplicationManager.getApplication().invokeLater {
+                if (generation != memoriesGeneration) return@invokeLater
+                memories = list
+                rebuild()
+            }
+        }
     }
 
     private fun rebuild() {
@@ -310,6 +333,18 @@ class KiroLibraryPanel(
         if (!compact) section(SectionKind.HOOKS, hooks.size, hooks.map { DefaultMutableTreeNode(LibNode.Hook(it)) })
         if (!compact) section(SectionKind.AGENTS, agents.size, agents.map { DefaultMutableTreeNode(LibNode.Agent(it, it.name == activeAgent)) })
         if (!compact) section(SectionKind.MCP, mcp.size, mcp.map { DefaultMutableTreeNode(LibNode.Mcp(it)) })
+        val remembered = memories?.filter { matches(it.title, it.summary, it.scopes.joinToString(" ")) }?.sortedByDescending { it.updatedAt.orEmpty() }
+        if (!compact) {
+            val children = remembered?.map { DefaultMutableTreeNode(LibNode.Mem(it)) } ?: emptyList()
+            val note = when {
+                remembered == null -> "Not available: start a chat first (needs kiro-cli 3.x)."
+                remembered.isEmpty() && memories.orEmpty().isEmpty() ->
+                    if (KiroSettings.getInstance().state.memoryMode == "read_write") "Nothing remembered yet." else "Nothing yet. Memory is off until you turn it on in Settings → Tools → Kiro."
+                remembered.isEmpty() -> "No memory matches the filter."
+                else -> null
+            }
+            section(SectionKind.MEMORIES, remembered?.size ?: 0, if (note != null) listOf(DefaultMutableTreeNode(LibNode.Note(note))) else children)
+        }
 
         rebuilding = true
         tree.model = DefaultTreeModel(root)
@@ -521,6 +556,7 @@ class KiroLibraryPanel(
             is LibNode.Hook -> open(n.hook.file)
             is LibNode.Agent -> open(n.agent.file)
             is LibNode.Mcp -> open(n.server.file)
+            is LibNode.Mem -> MemoryDialog(project, n.memory).show()
             is LibNode.Spec -> (n.spec.tasks ?: n.spec.requirements ?: n.spec.design)?.let(::open)
             else -> tree.selectionPath?.let { if (tree.isExpanded(it)) tree.collapsePath(it) else tree.expandPath(it) }
         }
@@ -572,7 +608,11 @@ class KiroLibraryPanel(
                 add("Delete") { delete(node) }
             }
             is LibNode.Mcp -> add("Open ${node.server.file.fileName} (${node.server.scope.label})") { open(node.server.file) }
-            null -> Unit
+            is LibNode.Mem -> {
+                add("View") { activate() }
+                add("Forget this (delete)") { forget(node.memory) }
+            }
+            is LibNode.Note, null -> Unit
         }
         if (group.childrenCount == 0) return
         ActionManager.getInstance().createActionPopupMenu("KiroLibraryMenu", group).component.show(tree, x, y)
@@ -586,10 +626,11 @@ class KiroLibraryPanel(
         SectionKind.HOOKS -> "New hook…"
         SectionKind.AGENTS -> "New agent…"
         SectionKind.MCP -> "Open mcp.json…"
+        SectionKind.MEMORIES -> "Memory settings…"
     }
 
     private fun showNewMenu() {
-        val kinds = SectionKind.entries
+        val kinds = SectionKind.entries.filter { it != SectionKind.MEMORIES }
         JBPopupFactory.getInstance().createPopupChooserBuilder(kinds)
             .setRenderer(listRenderer<SectionKind> { l, v -> l.append(v?.let { newLabel(it) } ?: "") })
             .setItemChosenCallback { kind -> guarded { create(kind) } }
@@ -642,6 +683,25 @@ class KiroLibraryPanel(
             SectionKind.MCP -> {
                 val scope = askScope() ?: return
                 open(resources().ensureMcpFile(scope))
+            }
+            SectionKind.MEMORIES -> ShowSettingsUtil.getInstance().showSettingsDialog(project, KiroConfigurable::class.java)
+        }
+    }
+
+    /** Deletes one of Kiro's memories after asking; Kiro is asked off the UI thread. */
+    private fun forget(memory: Memory) {
+        val what = memory.title.ifBlank { memory.summary }.take(80)
+        if (Messages.showYesNoDialog(project, "Make Kiro forget \"$what\"? This cannot be undone.", "Kiro", Messages.getWarningIcon()) != Messages.YES) return
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val failure = try {
+                project.getService(KiroAcpService::class.java).deleteMemory(memory.id)
+                null
+            } catch (e: Exception) {
+                e.message ?: e.toString()
+            }
+            ApplicationManager.getApplication().invokeLater {
+                if (failure != null) Messages.showErrorDialog(project, failure, "Kiro")
+                reloadMemories()
             }
         }
     }
@@ -706,6 +766,7 @@ class KiroLibraryPanel(
 
     private fun delete(node: LibNode) {
         val what = when (node) {
+            is LibNode.Mem -> return forget(node.memory)
             is LibNode.Sess -> (node.node as? SessionNode.FolderNode)?.let {
                 "folder \"${it.folder.name}\". Its sessions and sub-folders move up one level; no session is deleted" to
                     { organizer.deleteFolder(it.folder.id) }

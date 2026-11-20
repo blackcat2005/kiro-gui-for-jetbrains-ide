@@ -1,0 +1,3 @@
+<idea-plugin>
+    <!-- Loaded only when the IDE's JCEF plugin is present; it gives this plugin access to the embedded browser classes. -->
+</idea-plugin>

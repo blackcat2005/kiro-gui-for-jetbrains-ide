@@ -10,6 +10,7 @@ import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.FormBuilder
 import com.intellij.util.ui.JBUI
+import com.kirogui.jetbrains.acp.MemoryMode
 import com.kirogui.jetbrains.jobs.EvalGuard
 import java.awt.BorderLayout
 import java.awt.FlowLayout
@@ -47,6 +48,8 @@ class KiroConfigurable : Configurable {
     private val disabledToolsField = JBTextField().apply { emptyText.text = "e.g. debug_eval, bg_run" }
     private val restoreBox = JBCheckBox("Reopen the chats that were open last time")
     private val webChatBox = JBCheckBox("Rounded chat view (embedded browser)")
+    private val memoryBox = ComboBox(arrayOf(MEMORY_DEFAULT, *MemoryMode.entries.map { it.label }.toTypedArray()))
+    private val reflectionBox = JBCheckBox("Let Kiro save new memories by itself while you work")
     private val notifyBox = JBCheckBox("Notify me when Kiro finishes a reply")
     private val backgroundBox = JBCheckBox("Only when the IDE is in the background")
 
@@ -72,6 +75,7 @@ class KiroConfigurable : Configurable {
             jobShellField.isEnabled = jobShellBox.selectedItem != KiroLaunch.DEFAULT_SHELL
         }
         notifyBox.addActionListener { backgroundBox.isEnabled = notifyBox.isSelected }
+        memoryBox.addActionListener { reflectionBox.isEnabled = chosenMemory() == MemoryMode.READ_WRITE }
         // Help text lives behind a small "?" next to each setting: hover or click shows it, so the page stays short.
         val help = { c: JComponent, text: String -> withHelp(c, text) }
         return FormBuilder.createFormBuilder()
@@ -100,6 +104,9 @@ class KiroConfigurable : Configurable {
             .addLabeledComponent(JBLabel("Shell for Kiro's commands:"), help(jobShellBox, "The shell the commands Kiro starts with bg_run run in. Pick Git Bash if PowerShell is blocked where you work. {cmd} stands for the command; git-bash is found in the usual Git for Windows folders. Applies to the next command. Commands Kiro runs through its own built-in shell tool are not affected: that is kiro-cli's own setting."))
             .addLabeledComponent(JBLabel("Shell command:"), jobShellField)
             .addSeparator(12)
+            .addLabeledComponent(JBLabel("Kiro's memory:"), help(memoryBox, "Kiro (3.x, v3 engine) can remember your preferences and facts about a project across chats; what it remembers is listed under Memories in the Library, where you can read and delete it. Memory is off in Kiro until you choose here. The choice applies to chats opened after the change and only to chats this plugin starts. (kiro-cli in a terminal keeps its own setting.) Memories are shared by every chat, in the plugin and the terminal."))
+            .addComponent(help(reflectionBox, "With read and write access Kiro notices a preference or a fact worth keeping after a while of working and saves it. It also saves when you ask it to remember something. Without this, Kiro only remembers what you ask it to."))
+            .addSeparator(12)
             .addComponent(notifyBox)
             .addComponent(backgroundBox)
             .addComponentFillVertically(JPanel(), 0)
@@ -127,6 +134,8 @@ class KiroConfigurable : Configurable {
 
     private fun chosenEval(): String = EvalGuard.MODES[evalBox.selectedIndex.coerceAtLeast(0)]
 
+    private fun chosenMemory(): MemoryMode? = MemoryMode.entries.getOrNull(memoryBox.selectedIndex - 1)
+
     private fun chosenFamily(): String = (fontBox.selectedItem as? String)?.takeIf { it != DEFAULT_FONT } ?: ""
 
     private fun jobShellText(): String = if (jobShellBox.selectedItem == KiroLaunch.DEFAULT_SHELL) "" else jobShellField.text.trim()
@@ -139,7 +148,7 @@ class KiroConfigurable : Configurable {
             envArea.text.trim() != s.kiroEnv.trim() || shellText() != s.kiroShell || jobShellText() != s.jobShell || chosenFamily() != s.chatFontFamily ||
             (timeoutSpinner.value as Int) != s.startTimeoutSeconds || chosenEngine() != s.agentEngine ||
             (sizeSpinner.value as Int) != s.chatFontSize ||
-            autoFileBox.isSelected != s.autoAttachOpenFile || restoreBox.isSelected != s.restoreChats || webChatBox.isSelected != s.webChat || ideToolsBox.isSelected != s.ideTools || trustBox.isSelected != s.trustAllTools || guidanceBox.isSelected != s.autoGuidance || guidanceProjectBox.isSelected != s.guidanceInProject || workerModelField.text.trim() != s.workerModel || chosenEval() != s.evalMode || disabledToolsField.text.trim() != s.disabledTools || notifyBox.isSelected != s.notifyOnDone || backgroundBox.isSelected != s.notifyOnlyInBackground
+            autoFileBox.isSelected != s.autoAttachOpenFile || restoreBox.isSelected != s.restoreChats || webChatBox.isSelected != s.webChat || ideToolsBox.isSelected != s.ideTools || trustBox.isSelected != s.trustAllTools || guidanceBox.isSelected != s.autoGuidance || guidanceProjectBox.isSelected != s.guidanceInProject || workerModelField.text.trim() != s.workerModel || chosenEval() != s.evalMode || disabledToolsField.text.trim() != s.disabledTools || (chosenMemory()?.wire ?: "") != s.memoryMode || reflectionBox.isSelected != s.memoryReflection || notifyBox.isSelected != s.notifyOnDone || backgroundBox.isSelected != s.notifyOnlyInBackground
     }
 
     override fun apply() {
@@ -163,6 +172,8 @@ class KiroConfigurable : Configurable {
         s.webChat = webChatBox.isSelected
         s.evalMode = chosenEval()
         s.disabledTools = disabledToolsField.text.trim()
+        s.memoryMode = chosenMemory()?.wire ?: ""
+        s.memoryReflection = reflectionBox.isSelected
         s.notifyOnDone = notifyBox.isSelected
         s.notifyOnlyInBackground = backgroundBox.isSelected
         KiroSettings.getInstance().notifyChanged()
@@ -204,6 +215,9 @@ class KiroConfigurable : Configurable {
         webChatBox.isSelected = s.webChat
         evalBox.selectedIndex = EvalGuard.MODES.indexOf(s.evalMode).coerceAtLeast(0)
         disabledToolsField.text = s.disabledTools
+        memoryBox.selectedIndex = MemoryMode.entries.indexOfFirst { it.wire == s.memoryMode } + 1 // 0 = leave to Kiro
+        reflectionBox.isSelected = s.memoryReflection
+        reflectionBox.isEnabled = chosenMemory() == MemoryMode.READ_WRITE
         notifyBox.isSelected = s.notifyOnDone
         backgroundBox.isSelected = s.notifyOnlyInBackground
         backgroundBox.isEnabled = s.notifyOnDone
@@ -212,5 +226,6 @@ class KiroConfigurable : Configurable {
     private companion object {
         const val DEFAULT_FONT = "(IDE default)"
         const val ENGINE_DEFAULT = "(kiro-cli default)"
+        const val MEMORY_DEFAULT = "(leave to Kiro's own setting)"
     }
 }

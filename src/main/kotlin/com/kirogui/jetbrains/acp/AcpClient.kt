@@ -120,25 +120,27 @@ class AcpClient(
         put("clientInfo", buildJsonObject {
             put("name", "kiro-gui-for-jetbrains")
             put("title", "Kiro GUI for JetBrains")
-            put("version", "0.1.3")
+            put("version", "0.1.4")
         })
     }).get(startTimeoutSeconds, TimeUnit.SECONDS).also { supportsHttpMcp = AcpParse.httpMcp(it) }
 
     /** [mcpServers] are extra MCP servers for this session only (the IDE's own tools). */
-    fun newSession(cwd: String, mcpServers: JsonArray = JsonArray(emptyList())): SessionInfo {
+    fun newSession(cwd: String, mcpServers: JsonArray = JsonArray(emptyList()), meta: JsonObject? = null): SessionInfo {
         val result = connection.request("session/new", buildJsonObject {
             put("cwd", cwd)
             put("mcpServers", mcpServers)
+            if (meta != null) put("_meta", meta)
         }).get(startTimeoutSeconds, TimeUnit.SECONDS).jsonObject
         return parseSession(result, result.str("sessionId") ?: error("session/new returned no sessionId"))
     }
 
     /** Reloads a stored session. Kiro replays the history as `session/update` events before this returns. */
-    fun loadSession(sessionId: String, cwd: String, mcpServers: JsonArray = JsonArray(emptyList())): SessionInfo {
+    fun loadSession(sessionId: String, cwd: String, mcpServers: JsonArray = JsonArray(emptyList()), meta: JsonObject? = null): SessionInfo {
         val result = connection.request("session/load", buildJsonObject {
             put("sessionId", sessionId)
             put("cwd", cwd)
             put("mcpServers", mcpServers)
+            if (meta != null) put("_meta", meta)
         }).get(startTimeoutSeconds, TimeUnit.SECONDS)
         return parseSession(result as? JsonObject ?: JsonObject(emptyMap()), sessionId)
     }
@@ -188,6 +190,29 @@ class AcpClient(
             put("configId", configId)
             put("value", value)
         }).get(15, TimeUnit.SECONDS)
+    }
+
+    /** Everything Kiro remembers (kiro-cli 3.x, `_kiro/memory/list`, all pages). Throws when the agent has no memory. */
+    fun memories(): List<Memory> {
+        val all = ArrayList<Memory>()
+        var cursor: String? = null
+        do {
+            val page = connection.request("_kiro/memory/list", buildJsonObject { if (cursor != null) put("cursor", cursor) })
+                .get(20, TimeUnit.SECONDS)
+            val records = MemoryParse.list(page)
+            all.addAll(records)
+            val next = MemoryParse.nextCursor(page)
+            cursor = if (next != null && next != cursor && records.isNotEmpty()) next else null
+        } while (cursor != null && all.size < MAX_MEMORIES)
+        return all
+    }
+
+    /** One memory in full, or null if Kiro no longer has it. */
+    fun memory(id: String): Memory? =
+        MemoryParse.one(connection.request("_kiro/memory/get", buildJsonObject { put("id", id) }).get(20, TimeUnit.SECONDS))
+
+    fun deleteMemory(id: String) {
+        connection.request("_kiro/memory/delete", buildJsonObject { put("id", id) }).get(20, TimeUnit.SECONDS)
     }
 
     /** Completes with the stop reason (`end_turn`, `cancelled`, ...) when the turn finishes. */
@@ -357,6 +382,7 @@ class AcpClient(
 
     companion object {
         const val PROTOCOL_VERSION = 1
+        const val MAX_MEMORIES = 2000
         private val log = com.intellij.openapi.diagnostic.Logger.getInstance(AcpClient::class.java)
         private val URL_IN_TEXT = Regex("https?://[^\\s\"\\\\]+")
     }

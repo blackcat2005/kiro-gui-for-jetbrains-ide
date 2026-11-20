@@ -708,6 +708,7 @@ class KiroChatPanel(private val project: Project, parent: Disposable) : JPanel(B
         holdWake = false
         val pictures = sent.filterIsInstance<Attachment.Image>().map { PromptImage(it.mime, it.bytes) }
         submit(ChatBlock.User(text, sent), Attachments.compose(text, sent), pictures)
+        view.scrollToEnd() // the user was reading further up: jump back to the end to follow the answer
     }
 
     /** The commands the chat runs itself; /model and /agent offer the names of what the lists hold as their arguments. */

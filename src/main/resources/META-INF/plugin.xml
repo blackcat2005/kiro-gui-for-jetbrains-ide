@@ -4,8 +4,11 @@
     <vendor url="https://github.com/blackcat2005/kiro-gui-for-jetbrains-ide">blackcat20052003</vendor>
     <description><![CDATA[
         <p>A chat window for <a href="https://kiro.dev">Kiro</a> inside JetBrains IDEs. The plugin starts your local
-        <code>kiro-cli acp</code> and talks to it over the Agent Client Protocol (JSON-RPC over stdio), so there is no
-        embedded browser.</p>
+        <code>kiro-cli acp</code> and talks to it over the Agent Client Protocol (JSON-RPC over stdio). The chat is drawn in
+        the IDE's embedded browser when it has one and in a simpler built-in view otherwise.</p>
+
+        <p>New here? Read the
+        <a href="https://github.com/blackcat2005/kiro-gui-for-jetbrains-ide/blob/master/docs/USER_GUIDE.md">step-by-step user guide</a>.</p>
 
         <h3>Chat</h3>
         <ul>
@@ -42,12 +45,14 @@
             <li>Sessions in your own folders, grouped by date, with tangents under their parent; reopen, rename, move</li>
             <li>Skills, steering, specs (with task progress), hooks, agents and MCP servers from <code>.kiro/</code>,
                 with what is switched on and what is off</li>
+            <li>Memories: read and delete what Kiro remembers between chats (kiro-cli 3.x)</li>
         </ul>
 
         <h3>Settings</h3>
         <ul>
             <li>kiro-cli path, arguments, environment variables, and the shell to run it through (PowerShell, cmd, bash, WSL)</li>
             <li>Choice of kiro-cli engine and a start timeout for machines where security software slows kiro-cli down</li>
+            <li>Kiro's memory: off, read only, or read and write (with automatic saving), for the chats this plugin opens</li>
             <li>Chat font and size; a notification when Kiro finishes a reply</li>
         </ul>
 
@@ -66,6 +71,7 @@
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
+    <depends optional="true" config-file="kiro-jcef.xml">com.intellij.modules.jcef</depends>
 
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow id="Kiro" anchor="right" icon="/icons/kiro.svg"

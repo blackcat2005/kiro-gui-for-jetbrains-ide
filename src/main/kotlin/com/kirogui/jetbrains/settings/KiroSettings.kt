@@ -67,6 +67,15 @@ class KiroSettings : PersistentStateComponent<KiroSettings.State> {
         /** IDE tools Kiro does not get, by name (e.g. `debug_eval, bg_run`); applies to the next tools/list or call. */
         var disabledTools: String = ""
 
+        /**
+         * Kiro's memory (v3 engine) for the chats this plugin opens: `disabled`, `read_only` or `read_write`; blank leaves
+         * it to Kiro's own settings (which start out off).
+         */
+        var memoryMode: String = ""
+
+        /** With `read_write`: Kiro notices preferences and facts worth keeping and saves them by itself. */
+        var memoryReflection: Boolean = false
+
         /** Draw the chat in the IDE's embedded browser (rounded cards, timeline); off uses the older Swing view. */
         var webChat: Boolean = true
 

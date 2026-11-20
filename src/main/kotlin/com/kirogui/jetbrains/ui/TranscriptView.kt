@@ -31,6 +31,9 @@ interface TranscriptView {
 
     fun render(blocks: List<ChatBlock>, p: Palette, linker: FileLinker?, linkVersion: Int)
 
+    /** Jumps to the end of the chat, also after the next render (used when the user sends a message while scrolled up). */
+    fun scrollToEnd()
+
     companion object {
         /**
          * The web view if [useWeb] and the IDE supports it; Swing otherwise, also if the browser fails to start.
@@ -39,7 +42,16 @@ interface TranscriptView {
          * longer freeze the IDE while it loads.
          */
         fun create(parent: Disposable, useWeb: Boolean): TranscriptView =
-            if (useWeb && JBCefApp.isSupported()) LazyTranscript(parent) else SwingTranscript()
+            if (useWeb && jcefSupported()) LazyTranscript(parent) else SwingTranscript()
+
+        /** False when the IDE runtime has no JCEF at all (the JBCefApp class itself may be missing). */
+        private fun jcefSupported(): Boolean =
+            try {
+                JBCefApp.isSupported()
+            } catch (e: Throwable) {
+                com.intellij.openapi.diagnostic.Logger.getInstance(TranscriptView::class.java).info("JCEF unavailable, using Swing: $e")
+                false
+            }
 
         internal fun createNow(parent: Disposable): TranscriptView {
             try {
@@ -89,6 +101,10 @@ class LazyTranscript(private val parent: Disposable) : TranscriptView {
         holder.repaint()
         latest?.let { view.render(it.blocks, it.p, it.linker, it.linkVersion) }
         latest = null
+    }
+
+    override fun scrollToEnd() {
+        inner?.scrollToEnd()
     }
 
     override fun render(blocks: List<ChatBlock>, p: Palette, linker: FileLinker?, linkVersion: Int) {
@@ -160,6 +176,15 @@ class SwingTranscript : TranscriptView {
 
     override val component: JComponent get() = scroll
     override var onLink: (String, Boolean) -> Unit = { _, _ -> }
+
+    /** Set by [scrollToEnd]; the next [apply] then ends at the bottom whatever the scroll position was. */
+    private var forceEnd = false
+
+    override fun scrollToEnd() {
+        forceEnd = true
+        val bar = scroll.verticalScrollBar
+        SwingUtilities.invokeLater { bar.value = bar.maximum }
+    }
 
     private fun newPane(): JEditorPane = JEditorPane().apply {
         isEditable = false
@@ -296,7 +321,7 @@ class SwingTranscript : TranscriptView {
                 }
             }
             val bar = scroll.verticalScrollBar
-            val atBottom = bar.value + bar.visibleAmount >= bar.maximum - 8
+            val atBottom = forceEnd || bar.value + bar.visibleAmount >= bar.maximum - 8
             val previous = bar.value
             val bg = Color.decode("#${p.bg}")
             if (background != p.bg) {
@@ -327,6 +352,7 @@ class SwingTranscript : TranscriptView {
                 list.revalidate()
                 list.repaint()
                 SwingUtilities.invokeLater { bar.value = if (atBottom) bar.maximum else previous }
+                forceEnd = false
             }
         } finally {
             finished()
@@ -411,6 +437,10 @@ class WebTranscript(parent: Disposable) : TranscriptView {
         browser.loadHTML(SHELL)
     }
 
+    override fun scrollToEnd() {
+        if (loaded) browser.cefBrowser.executeJavaScript("scrollEnd()", "", 0)
+    }
+
     override fun render(blocks: List<ChatBlock>, p: Palette, linker: FileLinker?, linkVersion: Int) {
         val rows = WebHtml.renderRows(blocks, p, linker, linkVersion)
         if (!loaded) {
@@ -454,10 +484,17 @@ class WebTranscript(parent: Disposable) : TranscriptView {
 <script>
 // The IDE already worked out which rows changed (one div per chat block), so nothing is diffed or re-parsed here:
 // css is null when unchanged, count is the new number of rows, changed is a list of [index, html].
+var forceEnd = false;
+function scrollEnd() {
+  forceEnd = true;
+  var e = document.scrollingElement || document.documentElement;
+  e.scrollTop = e.scrollHeight;
+}
 function setRows(css, count, changed) {
   if (css !== null) document.getElementById('theme').textContent = css;
   var el = document.scrollingElement || document.documentElement;
-  var atBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < 48;
+  var atBottom = forceEnd || (el.scrollHeight - el.scrollTop - el.clientHeight) < 48;
+  forceEnd = false;
   var top = el.scrollTop;
   var root = document.getElementById('root');
   for (var k = 0; k < changed.length; k++) {

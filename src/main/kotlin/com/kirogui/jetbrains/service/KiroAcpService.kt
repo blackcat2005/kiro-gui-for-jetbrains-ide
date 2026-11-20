@@ -11,6 +11,9 @@ import com.intellij.openapi.util.Disposer
 import com.kirogui.jetbrains.acp.AcpClient
 import com.kirogui.jetbrains.acp.AcpEvent
 import com.kirogui.jetbrains.acp.JsonRpcException
+import com.kirogui.jetbrains.acp.Memory
+import com.kirogui.jetbrains.acp.MemoryMode
+import com.kirogui.jetbrains.acp.MemoryParse
 import com.kirogui.jetbrains.acp.httpMcpServer
 import com.kirogui.jetbrains.acp.PermissionHandler
 import com.kirogui.jetbrains.acp.PlanUsage
@@ -182,6 +185,36 @@ class KiroAcpService(private val project: Project) : Disposable {
         conv.info = null
         stale.add(sid)
         client?.cancel(sid)
+    }
+
+    /** Is kiro-cli running? Memories can only be read from a running process; the Library does not start one for them. */
+    fun isRunning(): Boolean = client != null
+
+    /**
+     * What Kiro remembers, or null when kiro-cli is not running or has no memory (the v2 engine). Blocks: call it from a
+     * background thread.
+     */
+    fun memories(): List<Memory>? {
+        val c = client ?: return null
+        return try {
+            c.memories()
+        } catch (e: Exception) {
+            log.info("Could not read Kiro's memories: ${(e as? java.util.concurrent.ExecutionException)?.cause?.message ?: e.message}")
+            null
+        }
+    }
+
+    /** One memory in full (blocks; background thread). */
+    fun memory(id: String): Memory? = client?.memory(id)
+
+    /** Deletes a memory (blocks; background thread). Throws if Kiro refuses. */
+    fun deleteMemory(id: String) {
+        val c = client ?: throw IllegalStateException("kiro-cli is not running.")
+        try {
+            c.deleteMemory(id)
+        } catch (e: java.util.concurrent.ExecutionException) {
+            throw IllegalStateException(e.cause?.message ?: e.message, e)
+        }
     }
 
     /** Stops the process; the next call starts a fresh one. */
@@ -452,7 +485,9 @@ class KiroAcpService(private val project: Project) : Disposable {
      */
     private fun open(c: AcpClient, resumeId: String?, cwd: String, ideTools: JobService.Endpoint?): SessionInfo {
         val servers = ideTools?.let { JsonArray(listOf(httpMcpServer(JobService.SERVER_NAME, it.url))) } ?: JsonArray(emptyList())
-        fun attempt(list: JsonArray) = if (resumeId != null) c.loadSession(resumeId, cwd, list) else c.newSession(cwd, list)
+        val settings = KiroSettings.getInstance().state
+        val meta = MemoryParse.sessionMeta(MemoryMode.of(settings.memoryMode), settings.memoryReflection)
+        fun attempt(list: JsonArray) = if (resumeId != null) c.loadSession(resumeId, cwd, list, meta) else c.newSession(cwd, list, meta)
         return try {
             attempt(servers)
         } catch (e: java.util.concurrent.ExecutionException) {

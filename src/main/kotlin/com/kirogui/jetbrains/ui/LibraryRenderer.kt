@@ -6,6 +6,7 @@ import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.components.JBLabel
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import com.kirogui.jetbrains.acp.Memory
 import com.kirogui.jetbrains.kiro.AgentInfo
 import com.kirogui.jetbrains.kiro.HookInfo
 import com.kirogui.jetbrains.kiro.McpInfo
@@ -33,6 +34,7 @@ enum class SectionKind(val title: String, val icon: Icon) {
     HOOKS("Hooks", AllIcons.Actions.Execute),
     AGENTS("Agents", AllIcons.General.User),
     MCP("MCP servers", AllIcons.Nodes.Plugin),
+    MEMORIES("Memories", AllIcons.Actions.IntentionBulb),
 }
 
 /** What a row in the Library tree stands for. */
@@ -46,6 +48,10 @@ sealed interface LibNode {
     data class Hook(val hook: HookInfo) : LibNode
     data class Agent(val agent: AgentInfo, val active: Boolean) : LibNode
     data class Mcp(val server: McpInfo) : LibNode
+    data class Mem(val memory: Memory) : LibNode
+
+    /** A quiet line in a section that has nothing to list (why, and what to do about it). */
+    data class Note(val text: String) : LibNode
 }
 
 /**
@@ -166,6 +172,14 @@ class LibraryTreeRenderer(
                 title.append("  ${m.scope.label}  ${m.transport}", small)
                 detailLine(listOfNotNull(m.offReason, m.summary.takeIf { it.isNotBlank() }).joinToString("  ·  "), small)
             }
+            is LibNode.Mem -> {
+                iconLabel.icon = AllIcons.Actions.IntentionBulb
+                val m = node.memory
+                title.append(fit(m.title.ifBlank { m.summary }, plain), plain)
+                title.append(if (m.isPreference) "  you" else "  project", small)
+                detailLine(m.summary.takeIf { m.title.isNotBlank() }.orEmpty().ifBlank { m.scopes.joinToString(", ") }, small)
+            }
+            is LibNode.Note -> title.append(truncate(node.text, 90), small)
             else -> title.append(node?.toString().orEmpty(), plain)
         }
         return this.row
